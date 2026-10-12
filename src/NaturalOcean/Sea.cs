@@ -28,7 +28,7 @@ namespace NaturalOcean
     /// </summary>
     static class Ocean
     {
-        public const string Version = "0.1.0";
+        public const string Version = "0.1.1";
         public static Mod Page;
         public static Toggle On, Others, Float, Weeds;
         public static Slider Rough, Clear;

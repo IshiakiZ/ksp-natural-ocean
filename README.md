@@ -4,7 +4,7 @@ A sea of its own for every world that has one: waves raised by the wind the weat
 white water where they break, surf where the bottom shelves, seaweed in the shallows, and water that a camera
 can go half under.
 
-**0.1.0: a first sea, not a finished one.** From a boat's deck in a fresh wind it reads as a sea at a glance; it does
+**A first sea, not a finished one (0.1).** From a boat's deck in a fresh wind it reads as a sea at a glance; it does
 not yet stand beside a photograph of one. What is wrong with it is said below, and at length in
 [the plan](docs/Plan.md), which is kept true as the work goes; what real seas do, and how
 they are drawn, is in [the research](docs/Research.md).
@@ -14,7 +14,7 @@ they are drawn, is in [the research](docs/Research.md).
 *Each picture a scene set afresh, the wind held, the camera held in its place for forty seconds first so that the
 foam has its history.*
 
-For Kerbal Space Program 1.12.x. Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone), which comes in the download. With
+For Kerbal Space Program 1.12.x. Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone), a separate download ([its page on SpaceDock](https://spacedock.info/mod/4665/Keystone)): this mod does not load without it. With
 [Natural Weather](https://github.com/IshiakiZ/ksp-natural-weather) installed the sea goes by the weather's wind; without it, by a
 light breeze.
 
@@ -35,7 +35,8 @@ light breeze.
 
 ## Install
 
-Copy the `Keystone` and `NaturalOcean` folders from the download into your KSP `GameData`.
+Install [Keystone](https://github.com/IshiakiZ/ksp-keystone) first: it is a download of its own, and its `Keystone` folder goes into your KSP
+`GameData`. Then copy the `NaturalOcean` folder from this mod's download into `GameData` beside it.
 
 ## Its settings
 
