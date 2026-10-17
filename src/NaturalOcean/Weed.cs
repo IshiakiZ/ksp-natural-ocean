@@ -193,6 +193,9 @@ namespace NaturalOcean
             drawn.receiveShadows = false;
             drawn.lightProbeUsage = LightProbeUsage.Off;
             drawn.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            // (Drawn among the solid things, and put afresh where the camera has gone: Unity would give its whole outline the
+            // motion of that move, and the game's temporal smoothing drag the seabed with it. Its sway is in the shader.)
+            drawn.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             // (the square's own corner at the sea's level, east along its first axis, up along its second, north along its third;
             // then made the terrain's child, to turn and move with the planet as the ground does)
             Vector3d corner = body.GetWorldSurfacePosition(lat0, lon0, 0.0);

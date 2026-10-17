@@ -77,6 +77,8 @@ uniform sampler2D _OceanSurfDeep;  // how deep the water is at each point as a w
 uniform sampler2D _FoamPrev;  // the picture as last worked out
 uniform sampler2D _FoamFronts;  // the second picture, the running fronts: as last worked out while it is being worked out, as just worked out while the white is
 uniform sampler2D _OceanLace;  // the lace (Foam.cs); its fourth number, slow blotches, makes the edges of the white ragged
+uniform vec4 _OceanDentAt;     // a blow's dent (Dents.cs): xy its middle, m from the point of the sea under the camera; z one over its side, 1/m; w 1 if there is one
+uniform sampler2D _OceanDentMove; // the dent's water moved sideways (rg, m), and where its rings are breaking (b, 0 to 1)
 out vec4 SV_Target0;
 
 // <surf> (this stretch is word for word the same in ocean.glsl and oceanfoam.glsl: glcheck_all.py sees that it stays so)
@@ -418,6 +420,14 @@ void main()
                         float share = min(hull.z / wide, 1.0);
                         breaking = max(breaking, hull.w * share * share * (1.0 - smoothstep(0.75, 1.1, off * (1.0 + 0.35 * uneven))));
                     }
+                }
+                // ---- A blow's rings breaking (Dents.cs): white where a ring's face is past breaking, as a breaker's front is,
+                // its edge torn by the same blotches; the maps keep what it leaves behind as it runs on, and thin it.
+                for (int once5 = _OceanDentAt.w > 0.5 ? 0 : 1; once5 < 1; once5++)
+                {
+                    vec2 inDent = (rel - _OceanDentAt.xy) * _OceanDentAt.z + 0.5;
+                    float ring = inDent.x > 0.0 && inDent.y > 0.0 && inDent.x < 1.0 && inDent.y < 1.0 ? textureLod(_OceanDentMove, inDent, 0.0).b : 0.0;
+                    breaking = max(breaking, 0.85 * smoothstep(0.25, 0.7, ring * (0.75 + 0.5 * uneven)));
                 }
                 white = max(white - seconds * (0.028 * _FoamRows.w + 0.10 * smoothstep(0.2, 0.45, white) + 0.5 * smoothstep(0.68, 0.8, white)) * (1.0 + 0.7 * uneven), breaking);
                 result[l] = _FoamRagged.x > 0.5 ? shown : white;

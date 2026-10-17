@@ -153,11 +153,22 @@ namespace NaturalOcean
             }
             if (s.Swell > 0.01f && s.SwellPeriod > 1f)
             {
-                // (a swell: a narrow band of long waves, the mean of the highest third of them `Swell` high, all within a few degrees of one way)
-                double at = 2.0 * Math.PI / s.SwellPeriod, wide = 0.07 * at;
-                double band = Math.Exp(-(omega - at) * (omega - at) / (2.0 * wide * wide)) / (wide * Math.Sqrt(2.0 * Math.PI));
-                swell = s.Swell * s.Swell / 16.0 * band * Spread(Wrap(way - s.SwellTo), 45.0) * slope / k;
+                // (Swell: long waves from storms far off. One that has run a thousand kilometres keeps to its way within ten
+                // or fifteen degrees and to its period within a tenth, and comes in groups (sets) with short, broken crests;
+                // and the open sea nearly always carries two, from two storms: here a second, three-fifths as high, a fifth
+                // shorter in period, coming seventy degrees round. Held to a few degrees and one band, as it first was, it
+                // came out as a handful of the largest patch's waves: one long, perfect sine across the whole sea.)
+                swell = SwellBand(omega, way, s.Swell, s.SwellPeriod, s.SwellTo, k, slope)
+                      + SwellBand(omega, way, 0.6f * s.Swell, 0.8f * s.SwellPeriod, s.SwellTo + 1.25f, k, slope);
             }
+        }
+
+        /// <summary>One train of swell: the mean of its highest third so high, so many seconds apart, coming so.</summary>
+        static double SwellBand(double omega, double way, double height, double period, double to, double k, double slope)
+        {
+            double at = 2.0 * Math.PI / period, wide = 0.09 * at;
+            double band = Math.Exp(-(omega - at) * (omega - at) / (2.0 * wide * wide)) / (wide * Math.Sqrt(2.0 * Math.PI));
+            return height * height / 16.0 * band * Spread(Wrap(way - to), 18.0) * slope / k;
         }
 
         static double Wrap(double a) { while (a > Math.PI) a -= 2.0 * Math.PI; while (a < -Math.PI) a += 2.0 * Math.PI; return a; }

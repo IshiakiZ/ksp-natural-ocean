@@ -9,6 +9,7 @@ Shader "NaturalOcean/Foam"
         _OceanSurfTime ("OceanSurfTime", 2D) = "" {}
         _OceanSurfDeep ("OceanSurfDeep", 2D) = "" {}
         _OceanLace ("OceanLace", 2D) = "" {}
+        _OceanDentMove ("OceanDentMove", 2D) = "" {}
     }
     SubShader
     {
@@ -109,6 +110,7 @@ Shader "NaturalOcean/Foam"
             float4 _OceanSurfA;     // the surf's two trains (the swell's and the wind sea's): x, z how long between crests (s); y, w how high out at sea (m)
             float4 _OceanSurfB;     // x, z: how far each train's count has got (the part of a period); y, w: how many whole periods have gone (wrapped)
             float4 _OceanAtSpot;     // xy: where the point of the sea under the camera is, m, wrapped every 1024 m (for patterns pinned to the water)
+            float4 _OceanDentAt;     // a blow's dent (Dents.cs): xy its middle, m from the point of the sea under the camera; z one over its side, 1/m; w 1 if there is one
             Texture2DArray _OceanSlope; SamplerState sampler_OceanSlope;
             Texture2D _OceanSeabed; SamplerState sampler_OceanSeabed;
             Texture2D _OceanSurfTime; SamplerState sampler_OceanSurfTime;     // how long a wave takes from each point to the shore, s: four maps, laid out as the seabed's
@@ -116,6 +118,7 @@ Shader "NaturalOcean/Foam"
             Texture2D _FoamPrev; SamplerState sampler_FoamPrev;     // the picture as last worked out
             Texture2D _FoamFronts; SamplerState sampler_FoamFronts;     // the second picture, the running fronts: as last worked out while it is being worked out, as just worked out while the white is
             Texture2D _OceanLace; SamplerState sampler_OceanLace;     // the lace (Foam.cs); its fourth number, slow blotches, makes the edges of the white ragged
+            Texture2D _OceanDentMove; SamplerState sampler_OceanDentMove;     // the dent's water moved sideways (rg, m), and where its rings are breaking (b, 0 to 1)
 
             struct v2f
             {
@@ -153,7 +156,7 @@ Shader "NaturalOcean/Foam"
             {
                 float out_ = max(abs(spot.x), abs(spot.y));
                 float ground = -1000.0;
-                [loop] for (int l = 3; l >= 0; l--)
+                { [loop] for (int l = 3; l >= 0; l--)
                 {
                     float span = 128.0 * Pick(_SeabedCell, l);
                     float inside = 1.0 - smoothstep(0.38, 0.46, out_ / span);
@@ -162,7 +165,7 @@ Shader "NaturalOcean/Foam"
                         float2 at = l == 0 ? _SeabedAtA.xy : l == 1 ? _SeabedAtA.zw : l == 2 ? _SeabedAtB.xy : _SeabedAtB.zw;
                         ground = lerp(ground, SampleLod(_OceanSeabed, at + spot / span, 0.0)[l], inside);
                     }
-                }
+                } }
                 return ground;
             }
 
@@ -171,7 +174,7 @@ Shader "NaturalOcean/Foam"
             {
                 float out_ = max(abs(spot.x), abs(spot.y));
                 float time = 5000.0;
-                [loop] for (int l = 3; l >= 0; l--)
+                { [loop] for (int l = 3; l >= 0; l--)
                 {
                     float span = 128.0 * Pick(_SeabedCell, l);
                     float inside = 1.0 - smoothstep(0.38, 0.46, out_ / span);
@@ -182,7 +185,7 @@ Shader "NaturalOcean/Foam"
                         // (a map that knows of no shore says nothing against one that does)
                         time = time > 4000.0 ? here : here > 4000.0 ? time : lerp(time, here, inside);
                     }
-                }
+                } }
                 return time;
             }
 
@@ -192,7 +195,7 @@ Shader "NaturalOcean/Foam"
             {
                 float out_ = max(abs(spot.x), abs(spot.y));
                 float deep = 1000.0;
-                [loop] for (int l = 3; l >= 0; l--)
+                { [loop] for (int l = 3; l >= 0; l--)
                 {
                     float span = 128.0 * Pick(_SeabedCell, l);
                     float inside = 1.0 - smoothstep(0.38, 0.46, out_ / span);
@@ -201,7 +204,7 @@ Shader "NaturalOcean/Foam"
                         float2 at = l == 0 ? _SeabedAtA.xy : l == 1 ? _SeabedAtA.zw : l == 2 ? _SeabedAtB.xy : _SeabedAtB.zw;
                         deep = lerp(deep, SampleLod(_OceanSurfDeep, at + spot / span, 0.0)[l], inside);
                     }
-                }
+                } }
                 return deep;
             }
 
@@ -235,7 +238,7 @@ Shader "NaturalOcean/Foam"
                 float late = SampleLod(_OceanLace, pinned / 256.0, 0.0).a + 0.2 * SampleLod(_OceanLace, pinned / 64.0 + 0.31, 0.0).a;
                 float known = 1.0 - smoothstep(150.0, 400.0, time);
                 float lift = 0.0, front = 0.0, thrown = 0.0, share = 0.0;
-                [loop] for (int j = 0; j < 2; j++)
+                { [loop] for (int j = 0; j < 2; j++)
                 {
                     float period = j == 0 ? _OceanSurfA.x : _OceanSurfA.z, offshore = j == 0 ? _OceanSurfA.y : _OceanSurfA.w;
                     float begun = j == 0 ? _OceanSurfB.x : _OceanSurfB.z, counted = j == 0 ? _OceanSurfB.y : _OceanSurfB.w;
@@ -266,7 +269,7 @@ Shader "NaturalOcean/Foam"
                         float run = pow(1.0 - part, 2.5) * smoothstep(0.0, 0.06, part);
                         lift += 0.34 * size * run * (1.0 - smoothstep(0.0, 1.2 * size, deep)) * (1.0 - smoothstep(0.6, 2.5, time)) * known;
                     }
-                }
+                } }
                 return float4(lift, front, thrown, share);
             }
             // </surf>
@@ -287,10 +290,10 @@ Shader "NaturalOcean/Foam"
                 bool fronts = _FoamPass.x < 0.5;
                 float4 result_ = fronts ? lit_ : was;
                 float2 downwind = float2(_FoamRagged.w, -_FoamRagged.z);
-                [loop] for (int l = 0; l < 4; l++)
+                { [loop] for (int l = 0; l < 4; l++)
                 {
                     float seconds = Pick(_FoamTime, l);
-                    [loop] for (int once = seconds > 0.0 ? 0 : 1; once < 1; once++)
+                    { [loop] for (int once = seconds > 0.0 ? 0 : 1; once < 1; once++)
                     {
                         float texel = Pick(_FoamTexel, l);
                         float2 cell = l == 0 ? _FoamCellA.xy : l == 1 ? _FoamCellA.zw : l == 2 ? _FoamCellB.xy : _FoamCellB.zw;
@@ -313,11 +316,11 @@ Shader "NaturalOcean/Foam"
                         // by breaking: the more of them the bottom has taken, the less of a squeeze it needs for the water to go white.)
                         float deep = max(-groundAt(rel), 0.0);
                         float taken = 0.0;
-                        [loop] for (int n = 0; n < 5; n++)
+                        { [loop] for (int n = 0; n < 5; n++)
                         {
                             float high = n < 4 ? Pick(_OceanHighA, n) : _OceanHighB.x;
                             taken = max(taken, (1.0 - clamp(0.45 * deep / max(high, 1e-3), 0.0, 1.0)) * smoothstep(0.15, 0.6, high));
-                        }
+                        } }
                         float wet = step(0.02, deep);
                         // (and not evenly: the picture of blotches, pinned to the water at two sizes, lets it break a little sooner here and
                         // later there, so that a patch of white has a torn edge and not a smooth one)
@@ -326,7 +329,7 @@ Shader "NaturalOcean/Foam"
                         float sooner = _FoamRagged.y * uneven + 0.5 * taken * wet * smoothstep(0.0, 0.5, deep);
                         float squeezed[5], faces[5], followed[5], speed[5];
                         float longer = 0.0;
-                        [loop] for (int n = 0; n < 5; n++)
+                        { [loop] for (int n = 0; n < 5; n++)
                         {
                             float high = n < 4 ? Pick(_OceanHighA, n) : _OceanHighB.x;
                             float kept = clamp(0.45 * deep / max(high, 1e-3), 0.0, 1.0);
@@ -345,7 +348,7 @@ Shader "NaturalOcean/Foam"
                             speed[n] = sqrt(_FoamFront.w * side / 35.2);
                             longer += own;
                             one *= _OceanLay.y;
-                        }
+                        } }
 
                         if (fronts)
                         {
@@ -357,7 +360,7 @@ Shader "NaturalOcean/Foam"
                             // got to. Each point holds: which size of wave (4 the longest that breaks, to 1) and, after the point, how
                             // much of the front's time is left.
                             float e = 0.0;
-                            [loop] for (int t = 0; t < 12; t++)
+                            { [loop] for (int t = 0; t < 12; t++)
                             {
                                 // (the eight round and the point itself; then two, three and four points up the wind, for the fast waves)
                                 float2 o = t < 9 ? float2(float(t - 3 * (t / 3)) - 1.0, float(t / 3) - 1.0) : -downwind * float(t - 7);
@@ -368,7 +371,7 @@ Shader "NaturalOcean/Foam"
                                 float upwind = step(dot(o, downwind), -0.3) + (t == 4 ? 1.0 : 0.0);
                                 float spreads = step(_FoamFront.z, 0.5 * speed[n] * seconds / texel);
                                 if (v >= 1.0 && followed[n] > 0.5 && max(upwind, spreads) > 0.5 && squeezed[n] < level + _FoamFront.x) e = max(e, v);
-                            }
+                            } }
                             if (e >= 1.0)
                             {
                                 int n = clamp(5 - int(e), 1, 4);
@@ -378,8 +381,8 @@ Shader "NaturalOcean/Foam"
                                 e = left > 0.0 ? floor(e) + left : 0.0;
                             }
                             if (fresh) e = 0.0;
-                            [loop] for (int n = 1; n < 5; n++)
-                                if (followed[n] > 0.5 && squeezed[n] < Pick(_FoamBreaks, n - 1)) e = max(e, float(5 - n) + 0.98);
+                            { [loop] for (int n = 1; n < 5; n++)
+                                if (followed[n] > 0.5 && squeezed[n] < Pick(_FoamBreaks, n - 1)) e = max(e, float(5 - n) + 0.98); }
                             result_ = Put(result_, l, e);
                         }
                         else
@@ -397,7 +400,7 @@ Shader "NaturalOcean/Foam"
                                 }
                             }
                             float e = Pick(lit_, l), breaking = 0.0, shown = 0.0;
-                            [loop] for (int n = 1; n < 5; n++)
+                            { [loop] for (int n = 1; n < 5; n++)
                             {
                                 float level = Pick(_FoamBreaks, n - 1);
                                 // (where a front of this size of wave is running: white on the forward face of the crest's steep stretch;
@@ -415,18 +418,18 @@ Shader "NaturalOcean/Foam"
                                 breaking = max(breaking, lerp(plain, running, followed[n]));
                                 // (for finding faults: one size of wave's steep stretches alone)
                                 if (int(_FoamRagged.x + 0.5) == n) shown = steep;
-                            }
+                            } }
                             if (_FoamRagged.x > 8.5) shown = e >= 1.0 ? 0.25 + 0.75 * frac(e) : 0.0;
                             breaking *= max(_FoamMode.y, taken * wet);
                             // (The white at the very edge of the water is not made here: the sea's own shader lays it where the water as DRAWN is
                             // thin. Made here from the depth the game's terrain gives when asked, it lay in a square on water a metre deep
                             // wherever the asked ground and the drawn ground differed.)
                             // (the surf: its breaking fronts and bores, and the edge of the sheet it sends up the sand)
-                            [loop] for (int once2 = deep < 9.0 * max(_OceanSurfA.y, _OceanSurfA.w) + 1.0 ? 0 : 1; once2 < 1; once2++)
+                            { [loop] for (int once2 = deep < 9.0 * max(_OceanSurfA.y, _OceanSurfA.w) + 1.0 ? 0 : 1; once2 < 1; once2++)
                             {
                                 float4 surf = surfAt(rel, -deep, feltDepthAt(rel), shoreTimeAt(rel));
                                 breaking = max(breaking, surf.y);
-                            }
+                            } }
                             // ---- Windrows. A wind over water sets the top few metres of it turning in long rolls laid along the wind
                             // (Langmuir's), side by side and turning opposite ways, so that the surface water runs together along lines
                             // down the wind and apart between them; and what floats is gathered into those lines. That is what the streaks
@@ -434,7 +437,7 @@ Shader "NaturalOcean/Foam"
                             // what lay a little to one side a moment ago, and more of it where the water is running together. The rolls
                             // are a slow pattern pinned to the water, far longer along the wind than across it, at two sizes (rows eight
                             // metres apart and thirty-two); a map whose points are too far apart to hold a row leaves that size out.
-                            [loop] for (int once3 = !fresh && _FoamRows.x > 0.0 ? 0 : 1; once3 < 1; once3++)
+                            { [loop] for (int once3 = !fresh && _FoamRows.x > 0.0 ? 0 : 1; once3 < 1; once3++)
                             {
                                 float2 along = _FoamRows.yz, athwart = float2(-_FoamRows.z, _FoamRows.y);
                                 float2 carried = ((float2)(0.0));
@@ -443,7 +446,7 @@ Shader "NaturalOcean/Foam"
                                 // pattern read slowly. Left straight, the rows stood exactly evenly apart, as the pattern's own points
                                 // do, and a gale's sea was corduroy.)
                                 float2 wander = SampleLod(_OceanLace, _FoamRowsAt.zw * 1.7 + float2(dot(rel, along) / 290.0, dot(rel, athwart) / 61.0) + 0.11, 0.0).ab - 0.5;
-                                [loop] for (int k = 0; k < 2; k++)
+                                { [loop] for (int k = 0; k < 2; k++)
                                 {
                                     float apart = k == 0 ? 8.0 : 32.0;
                                     float held = step(texel, apart / 8.0);
@@ -453,10 +456,10 @@ Shader "NaturalOcean/Foam"
                                     // there is the more foam, by as much a second as the water's speed over a quarter of the rows' distance)
                                     carried -= athwart * (_FoamRows.x * held * clamp((hi - lo) * 5.0, -1.0, 1.0));
                                     gathers += _FoamRows.x * held * clamp((hi - 2.0 * mid + lo) * 31.25, -1.0, 1.0) / (0.25 * apart);
-                                }
+                                } }
                                 white = shuffled(SampleLod(_FoamPrev, (point_ + 0.5 - carried * seconds / texel) / across, 0.0))[l];
                                 white = clamp(white * (1.0 + clamp(gathers, -0.2, 0.2) * seconds), 0.0, 1.0);
-                            }
+                            } }
                             // (Foam spreads a little as it lies: the edge of a patch is sharp where it has just been laid and soft where
                             // it is old. By about a fifth of a metre in a second, whatever the map's fineness.)
                             float spread = fresh ? 0.0 : clamp(0.03 * seconds / (0.5 * texel * texel), 0.0, 0.25);
@@ -476,22 +479,30 @@ Shader "NaturalOcean/Foam"
                             // the part, its edge torn by the same blotches, and in a map whose points are wider than the patch only
                             // as white as the patch's share of a point.
                             float4 hulls[12] = {_FoamHull0, _FoamHull1, _FoamHull2, _FoamHull3, _FoamHull4, _FoamHull5, _FoamHull6, _FoamHull7, _FoamHull8, _FoamHull9, _FoamHull10, _FoamHull11};
-                            [loop] for (int h = 0; h < 12; h++)
+                            { [loop] for (int h = 0; h < 12; h++)
                             {
                                 float4 hull = hulls[h];
-                                [loop] for (int once4 = hull.w > 0.0 ? 0 : 1; once4 < 1; once4++)
+                                { [loop] for (int once4 = hull.w > 0.0 ? 0 : 1; once4 < 1; once4++)
                                 {
                                     float wide = max(hull.z, 0.75 * texel);
                                     float off = length(rel - hull.xy) / wide;
                                     float share = min(hull.z / wide, 1.0);
                                     breaking = max(breaking, hull.w * share * share * (1.0 - smoothstep(0.75, 1.1, off * (1.0 + 0.35 * uneven))));
-                                }
-                            }
+                                } }
+                            } }
+                            // ---- A blow's rings breaking (Dents.cs): white where a ring's face is past breaking, as a breaker's front is,
+                            // its edge torn by the same blotches; the maps keep what it leaves behind as it runs on, and thin it.
+                            { [loop] for (int once5 = _OceanDentAt.w > 0.5 ? 0 : 1; once5 < 1; once5++)
+                            {
+                                float2 inDent = (rel - _OceanDentAt.xy) * _OceanDentAt.z + 0.5;
+                                float ring = inDent.x > 0.0 && inDent.y > 0.0 && inDent.x < 1.0 && inDent.y < 1.0 ? SampleLod(_OceanDentMove, inDent, 0.0).b : 0.0;
+                                breaking = max(breaking, 0.85 * smoothstep(0.25, 0.7, ring * (0.75 + 0.5 * uneven)));
+                            } }
                             white = max(white - seconds * (0.028 * _FoamRows.w + 0.10 * smoothstep(0.2, 0.45, white) + 0.5 * smoothstep(0.68, 0.8, white)) * (1.0 + 0.7 * uneven), breaking);
                             result_ = Put(result_, l, _FoamRagged.x > 0.5 ? shown : white);
                         }
-                    }
-                }
+                    } }
+                } }
                 result = result_;
                 return result;
             }

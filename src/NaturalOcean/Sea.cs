@@ -28,7 +28,7 @@ namespace NaturalOcean
     /// </summary>
     static class Ocean
     {
-        public const string Version = "0.1.1";
+        public const string Version = "0.2.0";
         public static Mod Page;
         public static Toggle On, Others, Float, Weeds;
         public static Slider Rough, Clear;
@@ -67,6 +67,7 @@ namespace NaturalOcean
         Foam foam;
         Seabed seabed;
         Spray spray;
+        Dents dents;
         Weed weed;
         double foamClock = double.NaN;
         // The sea's own two level axes, kept in the planet's own frame and carried along under the camera without being turned
@@ -91,11 +92,31 @@ namespace NaturalOcean
         // (development build: a sea held for a test)
         static float heldWind = -1f, heldSwell = -1f, heldTo = float.NaN, heldCross = float.NaN;
         static string lightSaid = "";
-        /// <summary>(Development build, for finding a fault: 1 leaves out the copy of the picture before the sea; 2 leaves other seas alone; 3 hides ours; 4: nothing mirrored from the last picture.)</summary>
+        /// <summary>(Development build, for finding a fault: 1 leaves out the copy of the picture before the sea; 2 leaves other seas alone; 3 hides ours; 4: nothing mirrored from the last picture; 6: the far camera's depth not kept for the near camera's sea; 7: no gusts on the water nor slicks.)</summary>
         public static float Test;
         public static string SetTest(string v) { Test = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture); if (instance != null) instance.Off(""); return "test " + Test; }
 
-        void Awake() { instance = this; Ocean.Setup(); Camera.onPreCull += SeenWith; Camera.onPreRender += UnderByWaves; }
+        void Awake() { instance = this; Ocean.Setup(); Camera.onPreCull += SeenWith; Camera.onPreRender += UnderByWaves; GameEvents.onCrashSplashdown.Add(Crashed); }
+
+        /// <summary>A part has crashed into the water (the game's own event, as the part dies): a splash as big as the blow (Spray.Struck).</summary>
+        // (an instance's method: the game's event list reads the handler's owner, and with a static one it throws and adds nothing)
+        void Crashed(EventReport report)
+        {
+            try
+            {
+                Part p = report != null ? report.origin : null;
+                if (p == null || p.vessel == null || Ocean.On == null || !Ocean.On || !Drawn) return;
+                Rigidbody rb = p.rb ?? p.Rigidbody;
+                Vector3 moving = rb != null ? rb.velocity + (Vector3)Krakensbane.GetFrameVelocity() : (Vector3)p.vessel.srf_velocity;
+                // (how long the craft is along the way it is going: a long one coming in at a slant ploughs a longer furrow)
+                Vector3 way = moving.sqrMagnitude > 1f ? moving.normalized : Vector3.down;
+                float lo = float.MaxValue, hi = float.MinValue;
+                foreach (Part q in p.vessel.parts) { if (q == null) continue; float s = Vector3.Dot(q.transform.position, way); if (s < lo) lo = s; if (s > hi) hi = s; }
+                float length = hi > lo ? hi - lo + 2f : 2f;
+                Spray.Struck(p.vessel.mainBody, (Vector3d)p.transform.position, p.mass + p.GetResourceMass(), moving.magnitude, moving, length);
+            }
+            catch (Exception ex) { Debug.Log("[Natural Ocean] the crash's splash failed: " + ex); }
+        }
 
         static Shader LoadOne(string file, string name, string system)
         {
@@ -177,10 +198,25 @@ namespace NaturalOcean
         /// are set by the water's height at the camera, so that at least it is the waves the camera is under or not. The
         /// game sets them again every frame.
         /// </summary>
+#if DEV
+        static int jitterLeft;
+        static readonly System.Text.StringBuilder jitterSaid = new System.Text.StringBuilder();
+        /// <summary>(development build) "go": note for sixteen camera drawings how far each camera's picture is shifted; anything else: what was noted.</summary>
+        public static string Jitters(string what) { if (what == "go") { jitterSaid.Length = 0; jitterLeft = 16; return "noting"; } return jitterSaid.ToString(); }
+#endif
         static void UnderByWaves(Camera cam)
         {
             Sea s = instance;
             if (s == null || s.waves == null || s.surface == null || !s.surface.Showing || cam == null || (cam.name != "Camera 00" && cam.name != "Camera 01")) return;
+#if DEV
+            // (how far each camera's picture is shifted this frame by a smoothing between frames: in points of the picture)
+            if (jitterLeft > 0)
+            {
+                Matrix4x4 j = cam.projectionMatrix, q = cam.nonJitteredProjectionMatrix;
+                jitterSaid.Append(Time.frameCount).Append(' ').Append(cam.name).Append(": ").Append(((j.m02 - q.m02) * 0.5f * cam.pixelWidth).ToString("F3")).Append(", ").Append(((j.m12 - q.m12) * 0.5f * cam.pixelHeight).ToString("F3")).Append(cam.useJitteredProjectionMatrixForTransparentRendering ? " (see-through things shifted too); " : " (see-through things not shifted); ");
+                jitterLeft--;
+            }
+#endif
             CelestialBody body = FlightGlobals.currentMainBody;
             if (body == null) return;
             Vector3d eye = (Vector3d)cam.transform.position;
@@ -394,6 +430,7 @@ namespace NaturalOcean
             foreach (var pair in grabs) if (pair.Key != null) pair.Key.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque, pair.Value);
             foreach (var pair in grabs) pair.Value.Release();
             grabs.Clear();
+            FarDepthOff();
             MirrorOff();
             LensOff();
             for (int n = 0; n < stockUnder.Length; n++) if (stockUnder[n] != null) stockUnder[n].fxOn = true;
@@ -405,6 +442,7 @@ namespace NaturalOcean
             Off("");
             Camera.onPreCull -= SeenWith;
             Camera.onPreRender -= UnderByWaves;
+            GameEvents.onCrashSplashdown.Remove(Crashed);
             if (mirror != null) { mirror.Release(); Destroy(mirror); }
             if (mirrorGrab != null) mirrorGrab.Release();
             if (waves != null) waves.Dispose();
@@ -471,7 +509,11 @@ namespace NaturalOcean
             // ---- what the sea is doing: the wind the weather has here, eased (a sea is always behind its wind)
             Vector3d eastScene = Vector3d.Cross(upScene, fz).normalized, northScene = Vector3d.Cross(eastScene, upScene).normalized;
             body.GetLatLonAlt((Vector3d)near.transform.position, out double lat, out double lon, out double _);
-            Vector3d windEN = Keystone.Weather.There ? Keystone.Weather.At(body, lat, lon, ut).Wind : new Vector3d(-4.5, -1.0, 0.0);
+            WeatherHere weatherHere = Keystone.Weather.There ? Keystone.Weather.At(body, lat, lon, ut) : default(WeatherHere);
+            Vector3d windEN = Keystone.Weather.There ? weatherHere.Wind : new Vector3d(-4.5, -1.0, 0.0);
+            // (the rain on the sea: water, not snow; eased over some seconds, as a shower comes and goes)
+            float rainWanted = Keystone.Weather.There ? weatherHere.Rain * Mathf.Clamp01(1f - weatherHere.Snow - weatherHere.Pellets) : 0f;
+            rainOnSea = Mathf.MoveTowards(rainOnSea, rainWanted, Time.deltaTime * 0.1f);
             Vector3d windScene = eastScene * windEN.x + northScene * windEN.y;
             float rough = Ocean.Rough != null ? (float)Ocean.Rough : 1f;
             float speed = (float)Math.Sqrt(windEN.x * windEN.x + windEN.y * windEN.y) * rough;
@@ -480,10 +522,12 @@ namespace NaturalOcean
             if (heldWind >= 0f) speed = heldWind;
             if (!float.IsNaN(heldTo)) to = heldTo;
 #endif
-            // (a swell from elsewhere, by where on the planet and which day: a metre or so, eleven to fifteen seconds, from its own way)
+            // (a swell from elsewhere, by where on the planet and which day, from its own way)
             uint day = unchecked((uint)(long)Math.Floor(ut / 21600.0)), place = unchecked((uint)(long)(Math.Floor(lat / 20.0) * 31 + Math.Floor(lon / 20.0)));
             float chance = Hash(day * 7919u + place * 104729u), chance2 = Hash(day * 31337u + place * 7u + 5u);
-            float swell = Mathf.Lerp(0.3f, 1.8f, chance * chance) * Mathf.Clamp01(rough), swellPeriod = Mathf.Lerp(10f, 15f, chance2), swellTo = chance2 * 6.2832f + 1.3f;
+            // (the open sea is hardly ever without swell: the wind of storms a thousand kilometres off arrives as long, smooth
+            // waves, a metre or two high, eleven to fifteen seconds apart; flat only in sheltered water)
+            float swell = Mathf.Lerp(0.7f, 2.2f, chance) * Mathf.Clamp01(rough), swellPeriod = Mathf.Lerp(10f, 15f, chance2), swellTo = chance2 * 6.2832f + 1.3f;
 #if DEV
             if (heldSwell >= 0f) swell = heldSwell;
             // (the swell made to run so many degrees across the wind's waves: a cross sea)
@@ -548,6 +592,10 @@ namespace NaturalOcean
             m.SetVector("_OceanRoughA", new Vector4(waves.Patch[0].Roughness, waves.Patch[1].Roughness, waves.Patch[2].Roughness, waves.Patch[3].Roughness));
             m.SetVector("_OceanRoughB", new Vector4(waves.Patch[4].Roughness, waves.Patch[5].Roughness, waves.Patch[6].Roughness, waves.Patch[7].Roughness));
             m.SetTexture("_OceanMoved", waves.Moved); m.SetTexture("_OceanSlope", waves.Slope);
+            // (a blow's dent in the water, and the next one expected: Dents)
+            if (dents == null) dents = new Dents();
+            Dents.Predict();
+            dents.Step(body, at, m, foam != null ? foam.Work : null);
 
             // ---- the ground under the sea, for the shallows; and how high each patch's waves are, for what the depth lets through
             seabed.Step(body, at, body.position + upScene * R, first, second, upScene, m, foam.Work);
@@ -586,12 +634,28 @@ namespace NaturalOcean
             float daylight = Mathf.Clamp01(sunUp * 5f + 0.15f), dusk = Mathf.Clamp01(1f - sunUp * 4f);
             WeatherShade shade = Keystone.Weather.There ? Keystone.Weather.Shade(body, (Vector3d)near.transform.position, toSun, ut) : new WeatherShade { Sun = 1f, Sky = 1f, Grey = 0f };
             Color top = new Color(0.035f, 0.11f, 0.32f) * daylight, low = Color.Lerp(new Color(0.36f, 0.50f, 0.68f), new Color(0.62f, 0.42f, 0.30f), dusk * 0.7f) * daylight;
-            float greyTop = top.grayscale * 2.2f, greyLow = low.grayscale * 1.05f;
+            // (an overcast sky is brightest overhead: about three times as bright as at the horizon (the CIE's overcast sky,
+            // (1 + 2 sin h) / 3); a clear one the other way round. As it first was, the grey overhead was half the grey at the
+            // horizon, and an overcast sea came out darker and bluer than one is)
+            float greyLow = low.grayscale * 0.85f, greyTop = greyLow * 2.6f;
             top = Color.Lerp(top, new Color(greyTop, greyTop, greyTop * 1.04f), shade.Grey) * shade.Sky;
             low = Color.Lerp(low, new Color(greyLow, greyLow, greyLow * 1.03f), shade.Grey) * shade.Sky;
-            m.SetVector("_OceanSun", new Vector4((float)toSun.x, (float)toSun.y, (float)toSun.z, shade.SunDimmed ? Mathf.Clamp01(sunUp * 12f + 0.2f) : shade.Sun * Mathf.Clamp01(sunUp * 12f + 0.2f)));
+            // (How much sun reaches the water. Where the weather draws its own clouds (SunDimmed) they dim the sun by laying
+            // their shadow over the finished picture, which this sea is drawn after, and the game's light is left as it was:
+            // so the sea takes the weather's own share. Where they do not, the light mod has dimmed the game's light already.
+            // As it first was, the other way round: under a full overcast the sea was lit as by the open sun, a strong navy.)
+            m.SetVector("_OceanSun", new Vector4((float)toSun.x, (float)toSun.y, (float)toSun.z, (shade.SunDimmed ? shade.Sun : 1f) * Mathf.Clamp01(sunUp * 12f + 0.2f)));
             m.SetVector("_OceanSunTint", new Vector4(sunTint.r, sunTint.g, sunTint.b, Mathf.Max(waves.HeightNow, 0.05f)));
             m.SetVector("_OceanSkyTop", new Vector4(top.r, top.g, top.b, shade.Grey));
+            m.SetVector("_OceanRain", new Vector4(rainOnSea, (float)(waves.ShownTime % 600.0), 0f, 0f));
+            // (the gusts' pattern carried down the wind at about the wind's speed; patchy most in a light breeze)
+            float gustTo = sea.WindTo - 0.5f * Waves.TwinTurn;
+            gustDrift += new Vector2(Mathf.Cos(gustTo), Mathf.Sin(gustTo)) * (0.8f * sea.Wind * Mathf.Min(Time.deltaTime, 0.1f));
+            gustDrift = new Vector2(Mathf.Repeat(gustDrift.x, 1024f), Mathf.Repeat(gustDrift.y, 1024f));
+            float patchy = sea.Wind < 0.3f ? 0f : 1f - 0.65f * Mathf.SmoothStep(0f, 1f, (sea.Wind - 3f) / 7f);
+            float slicks = 0f;   // (slicks down the wind: not yet, see TODO.md)
+            if (Test == 7f) { patchy = 0f; slicks = 0f; }
+            m.SetVector("_OceanGust", new Vector4(gustDrift.x, gustDrift.y, patchy, slicks));
             // (how far the sea can be seen along: in a gale the air over it is full of spray)
             // (from a gale on the air over the sea is full of spray: in a storm one sees two or three kilometres along it, in a hurricane less)
             float thick = Mathf.Clamp01((sea.Wind - 12f) / 16f);
@@ -605,7 +669,7 @@ namespace NaturalOcean
             m.SetVector("_OceanBreakHow", new Vector4(Foam.Eased, Waves.Longer, Foam.Soft, Lip));
             // ---- spray off the breaking crests, lit as the foam is
             if (spray == null) spray = new Spray();
-            Color whiteLight = sunTint * ((shade.SunDimmed ? 1f : shade.Sun) * Mathf.Clamp01(sunUp * 12f + 0.2f) * (0.3f + 0.6f * Mathf.Max(sunUp, 0f))) + (top + low) * 0.6f;
+            Color whiteLight = sunTint * ((shade.SunDimmed ? shade.Sun : 1f) * Mathf.Clamp01(sunUp * 12f + 0.2f) * (0.3f + 0.6f * Mathf.Max(sunUp, 0f))) + (top + low) * 0.6f;
             whiteLight = new Color(Mathf.Pow(Mathf.Clamp01(whiteLight.r * 0.62f), 1f / 2.2f), Mathf.Pow(Mathf.Clamp01(whiteLight.g * 0.62f), 1f / 2.2f), Mathf.Pow(Mathf.Clamp01(whiteLight.b * 0.62f), 1f / 2.2f), 1f);
             spray.Step(foam, waves, at, body.position + upScene * R, first, second, upScene, sea.Wind, sea.WindTo - 0.5f * Waves.TwinTurn, above, whiteLight, Mathf.Min(Time.deltaTime, 0.1f));
             // ---- seaweed: the beds as the sea's shader sees them from afar (by where on the planet), and the plants near the camera
@@ -620,7 +684,7 @@ namespace NaturalOcean
                 // (the water goes to and fro along the way the swell runs, further the higher the sea)
                 Vector3 sway = (Vector3)(first * Math.Cos(sea.SwellTo) + second * Math.Sin(sea.SwellTo));
                 float much = Mathf.Clamp(0.12f + 0.1f * waves.HeightNow, 0.1f, 0.5f);
-                Color sunLight2 = sunTint * ((shade.SunDimmed ? 1f : shade.Sun) * Mathf.Clamp01(sunUp * 12f + 0.2f) * (0.35f + 0.65f * Mathf.Max(sunUp, 0f)));
+                Color sunLight2 = sunTint * ((shade.SunDimmed ? shade.Sun : 1f) * Mathf.Clamp01(sunUp * 12f + 0.2f) * (0.35f + 0.65f * Mathf.Max(sunUp, 0f)));
                 Color fogged = Shader.GetGlobalColor("_UnderwaterFogColor");
                 fogged = new Color(Mathf.Pow(fogged.r, 2.2f), Mathf.Pow(fogged.g, 2.2f), Mathf.Pow(fogged.b, 2.2f)) * (0.35f + 0.9f * Mathf.Max(sunUp, 0f));
                 if (mirror != null) Shader.SetGlobalTexture("_OceanMirror", mirror);
@@ -629,12 +693,16 @@ namespace NaturalOcean
             }
             else if (weed != null) { weed.Dispose(); weed = null; }
             float clear = Ocean.Clear != null ? (float)Ocean.Clear : 1f;
-            m.SetVector("_OceanWater", new Vector4(0.004f, 0.030f, 0.062f, 12f * clear));
+            // (the water's own colour: a clear sea's deep blue; a sea stirred by a strong wind carries bubbles, and near a coast
+            // silt, that grey and green it)
+            float stirred = Mathf.Clamp01((sea.Wind - 5f) / 12f);
+            Color own = Color.Lerp(new Color(0.004f, 0.030f, 0.062f), new Color(0.010f, 0.032f, 0.040f), stirred * 0.7f);
+            m.SetVector("_OceanWater", new Vector4(own.r, own.g, own.b, 12f * clear));
             // ---- the lens in the water: the water's own light (the game's colour for this sea's water, lit by the sun as
             // high as it stands and by the sky) and how far one sees through it (thirty metres in clear coastal water)
             {
                 Color water = Shader.GetGlobalColor("_UnderwaterFogColor");
-                Color sunNow = sunTint * ((shade.SunDimmed ? 1f : shade.Sun) * Mathf.Clamp01(sunUp * 12f + 0.2f));
+                Color sunNow = sunTint * ((shade.SunDimmed ? shade.Sun : 1f) * Mathf.Clamp01(sunUp * 12f + 0.2f));
                 // (Over a shallow bottom the water's light is not the deep's blue: the bottom sends the sun back up through it,
                 // and over sand a few metres down it is the green-blue of a lagoon. By how deep the water is under the camera.)
                 float deepHere = seabed != null ? Mathf.Max(-seabed.At(at.x, at.y), 0f) : 1000f;
@@ -644,7 +712,7 @@ namespace NaturalOcean
                                       tone.g * (sunNow.g * (0.35f + 0.9f * Mathf.Max(sunUp, 0f)) + 0.5f * (top.g + low.g)),
                                       tone.b * (sunNow.b * (0.35f + 0.9f * Mathf.Max(sunUp, 0f)) + 0.5f * (top.b + low.b)));
                 lensSky = (low * 0.8f + top * 0.2f) + sunNow * 0.08f;
-                lensToSun = (Vector3)toSun; lensSunny = (shade.SunDimmed ? 1f : shade.Sun) * Mathf.Clamp01(sunUp * 6f);
+                lensToSun = (Vector3)toSun; lensSunny = (shade.SunDimmed ? shade.Sun : 1f) * Mathf.Clamp01(sunUp * 6f);
                 // (the sea's own shader mirrors the same light in its underside: dimmed as the lens's is, by how deep the camera is)
                 Color mirrored = lensLight * Mathf.Exp(-Mathf.Max(HeightAt((Vector3d)near.transform.position) - (float)high, 0f) / (0.85f * Mathf.Max(30f * clear, 3f)));
                 m.SetVector("_UnderLight", new Vector4(mirrored.r, mirrored.g, mirrored.b, 0f));
@@ -655,6 +723,11 @@ namespace NaturalOcean
 
             // ---- what the camera has drawn before the sea, for seeing the bottom through shallow water
             if (Test != 1f) { Grab(near); if (far != near) Grab(far); }
+            FarDepth(near, far, m);
+            // (The weather's veil, Natural Light's, is laid on a camera's picture before this sea is drawn there: the sea takes
+            // its veil in its own shader (ocean.glsl, at the end), and says so here, by the frame, so that the veil's own
+            // pass leaves the sea and the ground under it alone.)
+            Shader.SetGlobalFloat(idVeilsItself, Mathf.Max(1, Time.frameCount % 1000000));
             if (Test != 4f) Mirror(near, m); else { MirrorOff(); m.SetVector("_OceanMirrorX", Vector4.zero); }
             if ((Ocean.Others == null || Ocean.Others) && Test != 2f) OtherSeas.Away(body); else OtherSeas.Back();
             // (with the lens's own pass, no other whole-picture view of being under water: the game's (StockUnder) and Scatterer's (OtherSeas.Dry))
@@ -667,6 +740,61 @@ namespace NaturalOcean
                 + ", at the horizon " + low.r.ToString("F2") + " " + low.g.ToString("F2") + " " + low.b.ToString("F2") + ".";
 #endif
             Report = "The sea: wind " + sea.Wind.ToString("F1") + " m/s, waves " + waves.HeightNow.ToString("F1") + " m (the mean of the highest third), swell " + sea.Swell.ToString("F1") + " m every " + sea.SwellPeriod.ToString("F0") + " s.";
+        }
+
+        // ---- the far camera's depth picture, kept for the near camera's sea
+        RenderTexture farDepth, farScene;
+        CommandBuffer farDepthKeep;
+        Camera farDepthOn;
+        static readonly int idFarDepth = Shader.PropertyToID("_OceanFarDepth"), idFarScene = Shader.PropertyToID("_OceanFarScene"), idFarZ = Shader.PropertyToID("_OceanFarZ");
+        static readonly int idVeilsItself = Shader.PropertyToID("_SeaVeilsItself");
+        float rainOnSea;
+        Vector2 gustDrift;
+
+        /// <summary>
+        /// Where the game draws the flight scene with two cameras (OpenGL: one to 400 m, one from there on), the near
+        /// camera's sea has to see the bottom past its own sight, or every shallow lying across the hand-over is drawn as
+        /// deep water in a wedge with a ruled edge. The far camera's depth picture is copied as that camera draws, and
+        /// handed to the sea's shader with the numbers that turn it into metres (ocean.glsl, behindAt); and with it that
+        /// camera's picture as it stood before its own sea was drawn, which is what the near camera's sea then sees
+        /// through its water there (not the picture so far, which has the far camera's water in it where the two
+        /// cameras' sights overlap). With one camera (Direct3D 11) there is nothing to keep.
+        /// </summary>
+        void FarDepth(Camera near, Camera far, Material m)
+        {
+            if (far == null || far == near || Test == 6f) { FarDepthOff(); m.SetVector(idFarZ, Vector4.zero); return; }
+            int w = Mathf.Max(far.pixelWidth, 1), h = Mathf.Max(far.pixelHeight, 1);
+            if (farDepth == null || farDepth.width != w || farDepth.height != h || farDepthOn != far)
+            {
+                FarDepthOff();
+                farDepth = new RenderTexture(w, h, 0, RenderTextureFormat.RFloat, RenderTextureReadWrite.Linear) { name = "Natural Ocean: how far off the far camera's ground is", filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp, useMipMap = false };
+                farDepth.Create();
+                farScene = new RenderTexture(w, h, 0, RenderTextureFormat.DefaultHDR) { name = "Natural Ocean: the far camera's picture before its sea", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false };
+                farScene.Create();
+                farDepthKeep = new CommandBuffer { name = "Natural Ocean: the far camera's depth and picture kept" };
+                farDepthKeep.Blit(BuiltinRenderTextureType.CameraTarget, farScene);
+                farDepthKeep.Blit(BuiltinRenderTextureType.Depth, farDepth);
+                // (and back to the camera's own picture, as after the copy of the picture: see Grab)
+                farDepthKeep.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+                far.AddCommandBuffer(CameraEvent.AfterForwardOpaque, farDepthKeep);
+                farDepthOn = far;
+            }
+            // (that camera's own _ZBufferParams, its last two numbers: one over (the first times the depth plus the second) is metres)
+            float n = Mathf.Max(far.nearClipPlane, 1e-3f), f = far.farClipPlane;
+            float x = SystemInfo.usesReversedZBuffer ? -1f + f / n : 1f - f / n, y = SystemInfo.usesReversedZBuffer ? 1f : f / n;
+            m.SetTexture(idFarDepth, farDepth);
+            m.SetTexture(idFarScene, farScene);
+            // (and how far the near camera sees; any number above a half says there are two cameras)
+            m.SetVector(idFarZ, new Vector4(x / f, y / f, f, near.farClipPlane));
+        }
+
+        void FarDepthOff()
+        {
+            if (farDepthOn != null && farDepthKeep != null) farDepthOn.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque, farDepthKeep);
+            if (farDepthKeep != null) { farDepthKeep.Release(); farDepthKeep = null; }
+            if (farDepth != null) { farDepth.Release(); Destroy(farDepth); farDepth = null; }
+            if (farScene != null) { farScene.Release(); Destroy(farScene); farScene = null; }
+            farDepthOn = null;
         }
 
         void Grab(Camera cam)
@@ -714,6 +842,8 @@ namespace NaturalOcean
         }
 
         /// <summary>Whether a sea is being drawn in waves just now (and so can lift what floats).</summary>
+        /// <summary>(For the report and the development build: the last craft's blow on the water, as the splash was made for it.)</summary>
+        public static string Blow() => Spray.LastBlow.Length > 0 ? Spray.LastBlow : "no blow yet";
         public static bool Drawn => instance != null && instance.waves != null && instance.surface != null && instance.surface.Showing;
 
         /// <summary>How high the sea stands over a place in the scene, against its own level (m); nothing where there is no sea drawn.</summary>
@@ -1002,6 +1132,14 @@ namespace NaturalOcean
         /// the copy has water breaking this moment, as the spray takes it, in the same measure. The two must agree: a
         /// picture read back can come the other way up on one system than on another (asked of Direct3D, 2026-10-11).)
         /// </summary>
+        /// <summary>(Development build: where the point of the sea under the camera is on the sea's two axes, the camera's up in the planet's axes, and the game's clock.)</summary>
+        public static string AtNow()
+        {
+            Sea s = instance;
+            if (s == null) return "no sea";
+            return "at " + s.at.x.ToString("F2") + ", " + s.at.y.ToString("F2") + "; up " + s.upWas.x.ToString("F7") + ", " + s.upWas.y.ToString("F7") + ", " + s.upWas.z.ToString("F7") + "; ut " + Planetarium.GetUniversalTime().ToString("F2") + "; rotating frame " + FlightGlobals.RefFrameIsRotating + "; seabed waiting " + (s.seabed != null ? s.seabed.Waiting.ToString() : "-");
+        }
+
         public static string SeenTest(string words)
         {
             string[] w = (words ?? "").Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);

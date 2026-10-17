@@ -153,7 +153,7 @@ Shader "NaturalOcean/Under"
                 float2 turned = float2(_OceanTwin.y * came.x - _OceanTwin.z * came.y, _OceanTwin.z * came.x + _OceanTwin.y * came.y) / _OceanTwin.x;
                 float one = _OceanLay.x * _OceanLay.y * _OceanLay.y * _OceanLay.y * _OceanLay.y;
                 float closes = 0.0;
-                [loop] for (int n = 4; n < 7; n++)
+                { [loop] for (int n = 4; n < 7; n++)
                 {
                     float4 at = n == 4 ? _OceanAt4 : n == 5 ? _OceanAt5 : _OceanAt6;
                     // (a patch's waves are some 5.6 to its side; `past`: 1 at the depth where waves of a usual steepness for it meet their light)
@@ -164,7 +164,7 @@ Shader "NaturalOcean/Under"
                     float second = SampleLod(_OceanSlope, float3(at.zw + turned * one, float(n)), blurred).b;
                     closes += 0.25 * down * k * (first + second / _OceanTwin.x) / (1.0 + past * past);
                     one *= _OceanLay.y;
-                }
+                } }
                 // (half as much again as read: the squeeze is read smoothed between a patch's points, which is less than the water's own
                 // where it is most squeezed, and it is there that the light meets)
                 return 1.0 / max(abs(1.0 + 1.5 * closes * _OceanTwin.w), 0.3);
@@ -180,7 +180,7 @@ Shader "NaturalOcean/Under"
                 float2 turned = float2(_OceanTwin.y * came.x - _OceanTwin.z * came.y, _OceanTwin.z * came.x + _OceanTwin.y * came.y) / _OceanTwin.x;
                 float one = _OceanLay.x * _OceanLay.y * _OceanLay.y * _OceanLay.y;
                 float closes = 0.0;
-                [loop] for (int n = 3; n < 5; n++)
+                { [loop] for (int n = 3; n < 5; n++)
                 {
                     float4 at = n == 3 ? _OceanAt3 : _OceanAt4;
                     float k = 35.2 * one;
@@ -188,7 +188,7 @@ Shader "NaturalOcean/Under"
                     float second = SampleLod(_OceanSlope, float3(at.zw + turned * one, float(n)), 1.0).b;
                     closes += 0.25 * down * k * (first + second / _OceanTwin.x);
                     one *= _OceanLay.y;
-                }
+                } }
                 return 1.0 / max(abs(1.0 + 1.5 * closes * _OceanTwin.w), 0.3);
             }
 
@@ -215,7 +215,7 @@ Shader "NaturalOcean/Under"
                 float3 place = way * eyeDepth;
                 float3 faces = -normalize(cross(ddx(place), ddy(place)));
                 if (dot(faces, place) > 0.0) faces = -faces;
-                [loop] for (int once = wet > 0.0 ? 0 : 1; once < 1; once++)
+                { [loop] for (int once = wet > 0.0 ? 0 : 1; once < 1; once++)
                 {
                     // ---- what the wet glass sees: how much water lies between the glass and the thing
                     float water = (eyeDepth - _UnderLens.z) * long_;
@@ -240,13 +240,13 @@ Shader "NaturalOcean/Under"
                     float3 axisA = _UnderMapA.xyz * _UnderMapA.w, axisB = _UnderMapB.xyz * _UnderMapA.w;
                     float2 run = float2(dot(toward, axisA), dot(toward, axisB));
                     float2 spot0 = _UnderEye.xy + run * (_UnderLens.z * long_);
-                    [loop] for (int once = _UnderSun.z > 0.01 && scene.a > -0.5 && left.g > 0.03 ? 0 : 1; once < 1; once++)
+                    { [loop] for (int once = _UnderSun.z > 0.01 && scene.a > -0.5 && left.g > 0.03 ? 0 : 1; once < 1; once++)
                     {
                         // (only on what faces the sun)
                         float sunward = smoothstep(-0.05, 0.35, dot(faces, _UnderSunWay.xyz));
                         lit_ *= lerp(1.0, gathered(spot0 + run * max(water, 0.0), thingDown), _UnderSun.z * sunward * exp(-thingDown / 14.0));
-                    }
-                    [loop] for (int once = _UnderSun.z > 0.01 ? 0 : 1; once < 1; once++)
+                    } }
+                    { [loop] for (int once = _UnderSun.z > 0.01 ? 0 : 1; once < 1; once++)
                     {
                         // (The water's own light along the way comes mostly from near the glass: over half of it from the first ten
                         // metres. That part is looked at in ten places, each standing for a tenth of it; what comes from beyond is
@@ -255,16 +255,16 @@ Shader "NaturalOcean/Under"
                         float reach = min(max(water, 0.0), 10.0);
                         float near_ = 1.0 - exp(-takes * reach), all_ = 1.0 - exp(-takes * max(water, 0.0));
                         float sum = 0.0;
-                        [loop] for (int i = 0; i < 10; i++)
+                        { [loop] for (int i = 0; i < 10; i++)
                         {
                             float far_ = -log(1.0 - (float(i) + 0.5) / 10.0 * near_) / takes;
                             float down = deep - rises * far_;
                             sum += down > 0.0 ? lerp(1.0, beams(spot0 + run * far_, down), exp(-down / 20.0)) : 1.0;
-                        }
+                        } }
                         light *= lerp(1.0, (sum / 10.0 * near_ + (all_ - near_)) / max(all_, 1e-4), _UnderSun.z);
-                    }
+                    } }
                     colour = lerp(colour, colour * lit_ * left + light * (1.0 - left), wet);
-                }
+                } }
                 // ---- the line: the water's edge on the glass, where the water climbs it. From the water's level up to two thirds of
                 // the climb the glass shows the water's own dark (the light thrown back down); at the lip, a glint of the sky.
                 float climbs = _UnderTakes.w;

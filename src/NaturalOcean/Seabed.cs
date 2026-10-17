@@ -138,7 +138,11 @@ namespace NaturalOcean
                             else { if (-ring >= -Half) Reach(l, cx - ring, cz + j); if (ring < Half) Reach(l, cx + ring, cz + j); }
                         }
                 }
-                else if (cx != cellX[l] || cz != cellZ[l])
+                // (Moved only when the camera has gone more than two of the map's points from where it was last placed. Moved at
+                // every point, a camera standing still on a cell's edge (as the sea's point under it does at first: nought,
+                // which is an edge of every map) flipped it back and forth with the least wobble of the craft, and each time a
+                // strip was asked of the game again and the time to the shore swept again: 1.4 ms a frame on the pad.)
+                else if (Math.Abs(cx - cellX[l]) > 2 || Math.Abs(cz - cellZ[l]) > 2)
                 {
                     // (the strips that have come into reach)
                     long wasX = cellX[l], wasZ = cellZ[l];

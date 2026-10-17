@@ -187,8 +187,16 @@ namespace NaturalOcean
             if (marks.Count < 256) marks.Add(new Marked { Place = place, Wide = wide, White = white });
         }
 
+#if DEV
+        /// <summary>(Development build, for finding what the sea costs: the white water's passes left out, the last picture kept.)</summary>
+        public static bool SkipPasses;
+        public static string Skip(string on) { SkipPasses = on == "1"; return "the white water's passes " + (SkipPasses ? "left out" : "drawn"); }
+#endif
         public void Step(Waves waves, Vector2d at, float high, double seconds, float ready, float windTo, float wind, float gravity, Material sea)
         {
+#if DEV
+            if (SkipPasses) { marks.Clear(); return; }
+#endif
             // ---- the way the lace is laid: the wind's, in steps of twenty degrees. It is pinned to the water, so it cannot be
             // turned as the wind veers (far from where the sea's axes begin, the least turn would slide it metres): when the
             // wind has gone fifteen degrees from it, a second lace laid the new way is faded in over a quarter of a minute.
@@ -349,22 +357,59 @@ namespace NaturalOcean
         {
             there = seenTaken;
             if (!seenTaken) return default(Unity.Collections.NativeArray<Color32>);
-            RenderTexture before = RenderTexture.active;
-            RenderTexture.active = seen;
-            seenRead.ReadPixels(new Rect(0, 0, SeenAcross, SeenAcross), 0, 0, false);
-            RenderTexture.active = before;
+            // (Reading a picture back from the graphics card makes the game wait until the card has done everything it was
+            // given: measured, 2 to 6 ms of every frame, the dearest thing the sea did. Where the card can hand it back later
+            // without the wait (Direct3D, Metal), it is asked for so, and what came back last is used meanwhile; where it
+            // cannot (OpenGL, as on a Mac), it is read every fourth frame only, and the last reading used between: the spray
+            // is then placed by where the water was breaking up to a twentieth of a second before.)
+            if (SystemInfo.supportsAsyncGPUReadback)
+            {
+                if (!asking)
+                {
+                    asking = true;
+                    // (where each point of the picture stood when it was made, kept with it: see SeenWhere)
+                    int shiftX = seenShiftX, shiftZ = seenShiftZ;
+                    long[] atX = (long[])seenX.Clone(), atZ = (long[])seenZ.Clone();
+                    UnityEngine.Rendering.AsyncGPUReadback.Request(seen, 0, TextureFormat.RGBA32, request =>
+                    {
+                        asking = false;
+                        if (request.hasError || seenRead == null) return;
+                        seenRead.SetPixelData(request.GetData<Color32>(), 0);
+                        readShiftX = shiftX; readShiftZ = shiftZ;
+                        Array.Copy(atX, readX, Maps); Array.Copy(atZ, readZ, Maps);
+                        seenHad = true;
+                    });
+                }
+                there = seenHad;
+                return seenHad ? seenRead.GetRawTextureData<Color32>() : default(Unity.Collections.NativeArray<Color32>);
+            }
+            if (!seenHad || ++seenSkipped >= 4)
+            {
+                seenSkipped = 0;
+                RenderTexture before = RenderTexture.active;
+                RenderTexture.active = seen;
+                seenRead.ReadPixels(new Rect(0, 0, SeenAcross, SeenAcross), 0, 0, false);
+                RenderTexture.active = before;
+                readShiftX = seenShiftX; readShiftZ = seenShiftZ;
+                Array.Copy(seenX, readX, Maps); Array.Copy(seenZ, readZ, Maps);
+                seenHad = true;
+            }
             return seenRead.GetRawTextureData<Color32>();
         }
+        bool asking, seenHad;
+        int seenSkipped, readShiftX, readShiftZ;
+        readonly long[] readX = new long[Maps], readZ = new long[Maps];
 
         /// <summary>Where on the sea's two axes (m) the point (i, j) of the small copy lies in map `l`, and how far apart its points are there (m).</summary>
         public float SeenWhere(int l, int i, int j, out double x, out double z)
         {
+            // (by where the picture's points stood when the reading in hand was made, which may be some frames back: see Seen)
             int step = Across / SeenAcross;
             double t = Texel[l];
-            long px = i * step + seenShiftX, pz = j * step + seenShiftZ;
-            long cx = ((seenX[l] % Across) + Across) % Across, cz = ((seenZ[l] % Across) + Across) % Across;
+            long px = i * step + readShiftX, pz = j * step + readShiftZ;
+            long cx = ((readX[l] % Across) + Across) % Across, cz = ((readZ[l] % Across) + Across) % Across;
             long fromX = ((px - cx + Across / 2) % Across + Across) % Across - Across / 2, fromZ = ((pz - cz + Across / 2) % Across + Across) % Across - Across / 2;
-            x = (seenX[l] + fromX + 0.5) * t; z = (seenZ[l] + fromZ + 0.5) * t;
+            x = (readX[l] + fromX + 0.5) * t; z = (readZ[l] + fromZ + 0.5) * t;
             return (float)(t * step);
         }
 

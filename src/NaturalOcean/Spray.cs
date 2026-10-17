@@ -252,6 +252,332 @@ namespace NaturalOcean
             thrown.Clear();
         }
 
+        // ---- a craft crashing into the sea: a splash as big as the blow
+        // What was read first (2026-10-13: the water entry of bodies, the collapse of the cavity behind them, and the scaling
+        // of impact craters and of the waves they send out): a body that hits water fast blasts a cavity out of it; its
+        // energy lifts the water it throws out against gravity, so the cavity's radius goes with the fourth root of the
+        // energy (a quarter or so of it going into the cavity: R = (E / 4 rho g) ^ 1/4, ten metres for twenty tonnes at
+        // 200 m/s, two for a capsule at 30). A crown of water rises round its rim at once, a steep sheet that breaks into
+        // strands, about one and a half times the radius high, and falls back. The cavity closes in a second or two (some
+        // times sqrt(R / g)), and where its walls meet a jet of water shoots up the middle, two or three radii high, and
+        // falls. Mist hangs over it all and drifts with the wind; the water where it went in is churned white. Several
+        // parts of one craft coming in together are one blow.
+        sealed class Blow
+        {
+            public Vector3d FromBody;      // where, from the planet's middle (the scene moves under the floating origin)
+            public CelestialBody Body;
+            public double At;              // when it struck (the game's time)
+            public float Energy;           // J
+            public Vector3d Velocity;      // how it was going as it struck (the scene's axes), the parts' weighed by their energy
+            public float Length;           // m, the craft's length along that way
+            public bool Crowned, Jetted;
+            public System.Collections.Generic.List<Boil> Boils;   // its white water, made once the crater is open (Churned)
+            public Vector2d Way;           // the way the craft came, on the sea's two axes (along it the boils are laid)
+            public int Turn;               // (which of the boils are laid this frame, when there are many: Impacts)
+            public int JetCount, JetSent;  // the jet's drops, and how many of them are out (it streams out over a moment)
+        }
+
+        /// <summary>One event of a blow's white water (see Churned): where it is laid from the blow's middle (m, along the way the
+        /// craft came and across it), how far it drifts out while it lasts, when it begins (s after the blow) and how long it is
+        /// laid, how wide it is at the end (it grows to that from Opens of it), and how white at first.</summary>
+        struct Boil
+        {
+            public double Along, Across, DriftAlong, DriftAcross;
+            public float Born, Life, Wide, Opens, White;
+        }
+        static readonly System.Collections.Generic.List<Blow> impacts = new System.Collections.Generic.List<Blow>();
+        /// <summary>(For the report: the last blow's radius of cavity, crown and jet, m.)</summary>
+        public static string LastBlow = "";
+
+        /// <summary>A part has struck the water (the game's crash on splashdown): so heavy (t), so fast (m/s), at a place in the scene.</summary>
+        public static void Struck(CelestialBody body, Vector3d where, float tonnes, float speed, Vector3 velocity = default(Vector3), float length = 0f)
+        {
+            if (body == null || speed < 5f || tonnes <= 0f) return;
+            float energy = 0.5f * tonnes * 1000f * speed * speed;
+            double now = Planetarium.GetUniversalTime();
+            Vector3d from = where - body.position;
+            // (the same blow: another part of the same craft coming in within half a second and thirty metres)
+            for (int n = 0; n < impacts.Count; n++)
+            {
+                Blow b = impacts[n];
+                if (b.Body == body && !b.Crowned && now - b.At < 0.5 && (b.FromBody - from).sqrMagnitude < 900.0)
+                {
+                    b.FromBody = (b.FromBody * b.Energy + from * energy) / (b.Energy + energy);
+                    b.Velocity = (b.Velocity * b.Energy + (Vector3d)velocity * energy) / (b.Energy + energy);
+                    b.Length = Mathf.Max(b.Length, length);
+                    b.Energy += energy;
+                    return;
+                }
+            }
+            if (impacts.Count < 8) impacts.Add(new Blow { FromBody = from, Body = body, At = now, Energy = energy, Velocity = velocity, Length = length });
+        }
+
+        void Impacts(Color light, float wind, float windTo, Vector3d first, Vector3d second)
+        {
+            double now = Planetarium.GetUniversalTime();
+            for (int n = impacts.Count - 1; n >= 0; n--)
+            {
+                Blow b = impacts[n];
+                if (b.Body == null || b.Body != FlightGlobals.currentMainBody || now - b.At > 60.0 || now < b.At) { impacts.RemoveAt(n); continue; }
+                float g = (float)(b.Body.GeeASL * 9.80665);
+                float R = Mathf.Clamp(Mathf.Pow(b.Energy / (4f * 1000f * g), 0.25f), 0.8f, 60f);
+                float crown = Mathf.Min(1.5f * R, 150f), jet = Mathf.Min(2.6f * R, 260f);
+                float closes = 2.2f * Mathf.Sqrt(R / g);
+                Vector3d world = b.Body.position + b.FromBody;
+                Vector3 up = (Vector3)FlightGlobals.getUpAxis(b.Body, world);
+                // (on the water's surface there)
+                float level = Sea.WaterAt(world, out Vector3 _, out Vector2d place);
+                Vector3 at = (Vector3)world + up * (level - (float)b.Body.GetAltitude(world));
+                Vector3 a = Vector3.Cross(up, Vector3.right);
+                if (a.sqrMagnitude < 0.01f) a = Vector3.Cross(up, Vector3.forward);
+                a.Normalize();
+                Vector3 c = Vector3.Cross(up, a);
+                Vector3 windWay = (Vector3)(first * Math.Cos(windTo) + second * Math.Sin(windTo)) * wind;
+                float scale = Mathf.Clamp(R / 4f, 0.6f, 6f);
+                if (!b.Crowned && now - b.At >= 0.04)
+                {
+                    b.Crowned = true;
+                    LastBlow = "cavity " + R.ToString("F1") + " m, crown " + crown.ToString("F0") + " m, jet " + jet.ToString("F0") + " m, from " + (b.Energy / 1e6f).ToString("F1") + " MJ";
+                    Debug.Log("[Natural Ocean] a craft struck the sea: " + LastBlow);
+                    // (No white water yet: the crater stands open for a moment, dark inside the crown (Dents); the water is churned
+                    // white as its walls fall back in, below.)
+                    // (and the water itself dented: the crater, its walls falling back in and the rings it sends out: Dents)
+                    {
+                        Vector3d going = b.Velocity;
+                        double downward = -Vector3d.Dot(going, (Vector3d)up);
+                        var along = new Vector2((float)Vector3d.Dot(going, first), (float)Vector3d.Dot(going, second));
+                        float slant = going.sqrMagnitude > 1.0 ? Mathf.Atan2((float)downward, along.magnitude) : 1.5708f;
+                        Dents.Struck(b.Body, place, R, along, slant, b.Length);
+                    }
+                    // (the crown: a steep sheet thrown up and out from the rim, breaking into strands. From a slanting blow its rim is
+                    // the crater's, drawn out along the way the craft came (Dents), and most of the water goes forward and low: the
+                    // sheet leans downrange, and little is thrown back the way the craft came.)
+                    Vector3 goingWay = (Vector3)b.Velocity, flatWay = Vector3.ProjectOnPlane(goingWay, up);
+                    float slantDown = goingWay.sqrMagnitude > 1f ? Mathf.Atan2(-Vector3.Dot(goingWay, up), flatWay.magnitude) : 1.5708f;
+                    float lying = Mathf.Cos(Mathf.Clamp(slantDown, 0f, 1.5708f));
+                    Vector3 ahead = flatWay.sqrMagnitude > 1e-4f ? flatWay.normalized : a;
+                    float longer = Mathf.Clamp(1f + 0.9f * lying + 0.5f * lying * Mathf.Min(b.Length, 4f * R) / R, 1f, 3.2f);
+                    int count = Mathf.Clamp((int)(400f + 45f * R * R * Mathf.Sqrt(longer)), 400, 7000);
+                    for (int k = 0; k < count; k++)
+                    {
+                        float turn = Chance() * 6.2832f;
+                        Vector3 way = a * Mathf.Cos(turn) + c * Mathf.Sin(turn);
+                        float forward = Vector3.Dot(way, ahead);
+                        // (more of it forward: a share of the drops thrown back the way the craft came are left out)
+                        if (Chance() > (1f + 0.8f * lying * forward) / (1f + 0.8f * lying)) continue;
+                        // (a crown flares outward as it rises, like a tulip: fifty to seventy-five degrees; lower, forward, from a slant)
+                        float steep = (50f + 25f * Chance() - 25f * lying * Mathf.Max(forward, 0f)) * Mathf.Deg2Rad;
+                        float rise = Mathf.Sqrt(2f * g * crown) * (0.45f + 0.6f * Chance());
+                        float speed = rise / Mathf.Sin(steep);
+                        Vector3 rimAt = way * (R * (0.75f + 0.45f * Chance())) + ahead * (forward * (longer - 1f) * R + 0.35f * R * lying);
+                        one.position = at + rimAt + up * (0.2f * Chance() * scale);
+                        one.velocity = up * rise + way * (speed * Mathf.Cos(steep) * (0.7f + 0.6f * Chance())) + ahead * (speed * 0.35f * lying) + windWay * 0.2f;
+                        one.startSize = (0.06f + 0.14f * Chance()) * scale;
+                        one.startLifetime = 2f * rise / g + 0.4f;
+                        one.rotation = 0f;
+                        // (a thin sheet tearing into strands: seen through, not a white wall; and each strand lit a little more or less)
+                        float lit = 0.72f + 0.28f * Chance();
+                        one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, 0.2f + 0.35f * Chance());
+                        drops.Emit(one, 1);
+                    }
+                    Puffs(at, up, a, c, R, R * 1.1f, crown * 0.6f, Mathf.Clamp((int)(50f + 5f * R), 50, 260), light, windWay);
+                }
+                if (b.Crowned && !b.Jetted && now - b.At >= closes)
+                {
+                    b.Jetted = true;
+                    // (fewer drops than the crown: thrown all together they were a white pillar; and fewer still from a slanting
+                    // craft, whose cavity falls in less evenly and sends up a weaker jet)
+                    Vector3 cameIn = (Vector3)b.Velocity, cameFlat = Vector3.ProjectOnPlane(cameIn, up);
+                    float cameLying = cameIn.sqrMagnitude > 1f ? Mathf.Cos(Mathf.Clamp(Mathf.Atan2(-Vector3.Dot(cameIn, up), cameFlat.magnitude), 0f, 1.5708f)) : 0f;
+                    b.JetCount = Mathf.RoundToInt(Mathf.Clamp(120f + 12f * R * R, 120f, 2000f) * (1f - 0.5f * cameLying * cameLying));
+                    Puffs(at, up, a, c, R, R * 0.4f, jet * 0.8f, Mathf.Clamp((int)(40f + 4f * R), 40, 220), light, windWay);
+                }
+                // (The jet: where the cavity's walls meet, water comes up the middle, and goes on coming for a moment while the
+                // walls run in, the first of it the fastest: a column that grows up out of the water, its tip highest, few of
+                // its drops reaching the top. Thrown all in one frame it stood for a second as a white block. From a slanting
+                // craft it comes back out along the cavity the craft dug, leaning back the way the craft came. The water
+                // churned white: below.)
+                if (b.Jetted && b.JetSent < b.JetCount)
+                {
+                    float jetFor = Mathf.Max(0.3f * closes, 0.15f);
+                    int upTo = Mathf.Min(b.JetCount, Mathf.CeilToInt(b.JetCount * Mathf.Clamp01((float)(now - b.At - closes) / jetFor)));
+                    Vector3 goingWay = (Vector3)b.Velocity, flatWay = Vector3.ProjectOnPlane(goingWay, up);
+                    float slantDown = goingWay.sqrMagnitude > 1f ? Mathf.Atan2(-Vector3.Dot(goingWay, up), flatWay.magnitude) : 1.5708f;
+                    float lying = Mathf.Cos(Mathf.Clamp(slantDown, 0f, 1.5708f));
+                    Vector3 ahead = flatWay.sqrMagnitude > 1e-4f ? flatWay.normalized : a;
+                    // (leaning back by up to some thirty degrees, as much as the craft came in slanting)
+                    float lean = 0.5f * lying * lying;
+                    Vector3 column = (up * Mathf.Cos(lean) - ahead * Mathf.Sin(lean)).normalized;
+                    Vector3 foot = at + ahead * (0.35f * R * lying);
+                    for (int k = b.JetSent; k < upTo; k++)
+                    {
+                        float when = k / (float)b.JetCount;
+                        float turn = Chance() * 6.2832f, out_ = Mathf.Sqrt(Chance());
+                        Vector3 way = a * Mathf.Cos(turn) + c * Mathf.Sin(turn);
+                        float rise = Mathf.Sqrt(2f * g * jet) * (0.3f + 0.7f * (1f - when) * (1f - when) * (0.6f + 0.4f * Chance()));
+                        // (thick at its foot and thinning upward: the slow water spreads, the fast keeps to the middle)
+                        float slow = 1f - rise / Mathf.Sqrt(2f * g * jet);
+                        one.position = foot + way * (R * (0.18f + 0.22f * slow) * out_) + up * (0.3f * Chance() * scale);
+                        one.velocity = column * rise + way * (rise * (0.04f + 0.18f * out_ * (0.5f + slow))) + windWay * 0.15f;
+                        one.startSize = (0.08f + 0.2f * Chance()) * scale;
+                        one.startLifetime = 2f * rise * Mathf.Cos(lean) / g + 0.3f;
+                        one.rotation = 0f;
+                        // (a column of drops and strands, seen through at its edges: so many at once, as bright as these were, it was a white pillar)
+                        // (and not one flat white: each drop lit a little more or less, the slow heavy water at its foot, much of it in
+                        // the shade of the rest, dimmer and thinner)
+                        float lit = (0.72f + 0.28f * Chance()) * (1f - 0.25f * slow);
+                        one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.16f + 0.3f * Chance()) * (1f - 0.4f * out_) * (1f - 0.45f * slow));
+                        drops.Emit(one, 1);
+                    }
+                    b.JetSent = upTo;
+                }
+                // ---- The water churned white (Churned). Each of its events is laid in the white water's maps while it lasts, as a
+                // hull's churn is, and then left there to thin by the maps' own time, into lace and then nothing. At most nine
+                // a frame from one blow (the maps take a dozen marks a frame in all): when more are going, they take turns, and
+                // a mark missed for a frame has barely faded.
+                float age = (float)(now - b.At);
+                if (b.Crowned && b.Boils == null) b.Boils = Churned(b, R, crown, jet, closes, g, first, second, up);
+                float churnFor = 0f;
+                if (b.Boils != null)
+                {
+                    Vector2d way = b.Way, side = new Vector2d(-way.y, way.x);
+                    int going = 0;
+                    for (int k = 0; k < b.Boils.Count; k++)
+                    {
+                        Boil o = b.Boils[k];
+                        churnFor = Mathf.Max(churnFor, o.Born + o.Life);
+                        if (age >= o.Born && age < o.Born + o.Life) going++;
+                    }
+                    int every = Mathf.Max(1, Mathf.CeilToInt(going / 9f)), seen = 0;
+                    b.Turn++;
+                    for (int k = 0; k < b.Boils.Count; k++)
+                    {
+                        Boil o = b.Boils[k];
+                        float t = age - o.Born;
+                        if (t < 0f || t >= o.Life) continue;
+                        if ((seen++ + b.Turn) % every != 0) continue;
+                        float f = t / o.Life;
+                        // (it wells up and spreads, quickly at first; the froth on it thins as it goes)
+                        float spread = 1f - Mathf.Exp(-3f * f);
+                        double al = o.Along + o.DriftAlong * spread, ac = o.Across + o.DriftAcross * spread;
+                        Foam.Mark(place + way * al + side * ac, o.Wide * Mathf.Lerp(o.Opens, 1f, Mathf.Sqrt(f)), o.White * (1f - 0.45f * Mathf.Pow(f, 0.7f)));
+                    }
+                }
+                if (b.Crowned && b.Jetted && (b.Boils == null || age >= churnFor)) impacts.RemoveAt(n);
+            }
+        }
+
+        /// <summary>
+        /// A blow's white water, as the events it is made of. (The user, of the first try: "there should be a lot more white
+        /// water, second scene there was none other than the particle splash". The second try laid one patch, evenly, every
+        /// frame for half a minute: a flat white disc, the maps' lace too fine to show in it from a little way off.)
+        ///
+        /// What makes it, as read (the water entry of bodies; underwater blasts and the bubble plumes of breaking waves;
+        /// photographs from above of bomb splashes round a ship): the crater's walls running back in, the jet coming down in the
+        /// middle and the crown coming down round about all beat air into the water, each at its own time and place. The air
+        /// goes down as a cloud of bubbles under where the crater was (along the furrow of a slanting blow) and comes back up
+        /// for half a minute and more: not evenly but in boils, here and there, each a dome of froth that wells up, spreads
+        /// and thins while others break out beside it, fewer, weaker and further out as the cloud rises and spreads. Between
+        /// them the water is milky green with the bubbles under it (the sea's shader does that where the white is). So: the
+        /// walls' white round the crater, the jet's in the middle, a ring of the crown's splashes, and the boils; each laid
+        /// for a moment and then left to the maps, which thin it into lace. Made once for each blow, by its own chance.
+        /// </summary>
+        static System.Collections.Generic.List<Boil> Churned(Blow b, float R, float crown, float jet, float closes, float g, Vector3d first, Vector3d second, Vector3 up)
+        {
+            var alongSea = new Vector2d(Vector3d.Dot(b.Velocity, first), Vector3d.Dot(b.Velocity, second));
+            double downward = -Vector3d.Dot(b.Velocity, (Vector3d)up);
+            float lying = b.Velocity.sqrMagnitude > 1.0 ? (float)Math.Cos(Math.Min(Math.Atan2(downward, alongSea.magnitude), Math.PI / 2)) : 0f;
+            float stretch = Mathf.Clamp(1f + 0.9f * lying + 0.5f * lying * Mathf.Min(b.Length, 4f * R) / R, 1f, 3.2f);
+            b.Way = alongSea.magnitude > 1e-3 ? alongSea / alongSea.magnitude : new Vector2d(1.0, 0.0);
+            var rnd = new System.Random(unchecked((int)(b.At * 1009.0) ^ (int)b.Energy));
+            float F() => (float)rnd.NextDouble();
+            var list = new System.Collections.Generic.List<Boil>();
+            // (where the crater was deepest: a third of a radius downrange of where it struck, as Dents digs it)
+            float ahead = 0.35f * lying * R;
+            // ---- the walls running back in: white round the crater's rim, drawn in with them, from a little before the jet
+            int walls = Mathf.Clamp(Mathf.RoundToInt(7f * Mathf.Sqrt(stretch)), 6, 13);
+            for (int k = 0; k < walls; k++)
+            {
+                double turn = (k + 0.7 * F()) / walls * 2.0 * Math.PI, far = (0.75 + 0.35 * F()) * R;
+                list.Add(new Boil
+                {
+                    Along = Math.Cos(turn) * far * stretch + ahead, Across = Math.Sin(turn) * far,
+                    DriftAlong = -Math.Cos(turn) * 0.3 * R * stretch, DriftAcross = -Math.Sin(turn) * 0.3 * R,
+                    Born = (0.4f + 0.35f * F()) * closes, Life = (0.45f + 0.4f * F()) * closes + 0.3f,
+                    Wide = (0.35f + 0.25f * F()) * R, Opens = 0.6f, White = 0.82f + 0.12f * F()
+                });
+            }
+            // ---- the jet coming down in the middle: most of its water a second or three after it went up
+            float aloft = Mathf.Sqrt(2f * jet / g);
+            int falls = Mathf.Clamp(Mathf.RoundToInt(5f * Mathf.Sqrt(stretch)), 4, 9);
+            for (int k = 0; k < falls; k++)
+            {
+                double turn = F() * 2.0 * Math.PI, far = Math.Sqrt(F()) * 0.55 * R;
+                list.Add(new Boil
+                {
+                    Along = Math.Cos(turn) * far * stretch + ahead, Across = Math.Sin(turn) * far,
+                    DriftAlong = Math.Cos(turn) * 0.5 * R, DriftAcross = Math.Sin(turn) * 0.5 * R,
+                    Born = closes + (0.5f + 1.1f * F()) * aloft, Life = 0.6f + 0.8f * F() + 0.08f * R,
+                    Wide = (0.5f + 0.35f * F()) * R, Opens = 0.5f, White = 0.88f + 0.1f * F()
+                });
+            }
+            // ---- the crown coming down round the crater, a few seconds in: a broken ring of splashes, one to three radii
+            // out, thrown furthest and most of it downrange from a slant (as its drops are thrown)
+            float crownAloft = Mathf.Sqrt(2f * crown / g);
+            int ring = Mathf.Clamp(Mathf.RoundToInt(16f * Mathf.Sqrt(stretch)), 14, 30);
+            for (int k = 0; k < ring; k++)
+            {
+                double turn = (k + F()) / ring * 2.0 * Math.PI;
+                float forward = (float)Math.Cos(turn);
+                if (F() > (1f + 0.8f * lying * forward) / (1f + 0.8f * lying)) continue;
+                double far = (1.4 + 1.4 * F() * F()) * R + Math.Max(forward, 0f) * lying * R;
+                list.Add(new Boil
+                {
+                    Along = Math.Cos(turn) * (far + (stretch - 1f) * R) + ahead, Across = Math.Sin(turn) * far,
+                    DriftAlong = Math.Cos(turn) * 0.25 * R, DriftAcross = Math.Sin(turn) * 0.25 * R,
+                    Born = (1.0f + 0.7f * F()) * crownAloft, Life = 0.35f + 0.5f * F(),
+                    Wide = (0.18f + 0.3f * F()) * R, Opens = 0.7f, White = 0.62f + 0.25f * F()
+                });
+            }
+            // ---- the boils: the air coming back up for half a minute and more (longer for a bigger blow), most of it early;
+            // a boil wells up within a radius or so of the middle at first and further out later, spreads out and drifts
+            // away from the middle as it goes, and is less white the later it comes
+            float churnFor = Mathf.Clamp(14f + 2.5f * R, 14f, 48f);
+            int boils = Mathf.Clamp(Mathf.RoundToInt((22f + 1.2f * R) * Mathf.Sqrt(stretch)), 20, 90);
+            float from = 0.9f * closes, until = Mathf.Max(churnFor - 5f, from + 4f);
+            for (int k = 0; k < boils; k++)
+            {
+                float when = Mathf.Pow(F(), 1.8f);
+                double turn = F() * 2.0 * Math.PI, far = Math.Sqrt(F()) * R * (0.5 + 1.0 * Math.Sqrt(when));
+                double out_ = (0.3 + 0.7 * F()) * R;
+                list.Add(new Boil
+                {
+                    Along = Math.Cos(turn) * far * stretch + ahead, Across = Math.Sin(turn) * far,
+                    DriftAlong = Math.Cos(turn) * out_ * stretch, DriftAcross = Math.Sin(turn) * out_,
+                    Born = from + when * (until - from), Life = (2.5f + 3.5f * F()) * Mathf.Clamp(Mathf.Sqrt(R / 4f), 0.7f, 2f),
+                    Wide = (0.3f + 0.4f * F()) * R, Opens = 0.35f, White = (0.62f + 0.25f * F()) * (1f - 0.45f * when)
+                });
+            }
+            return list;
+        }
+
+        /// <summary>Mist over a blow: soft puffs from round about its middle up to so high, rising a little and drifting with the wind.</summary>
+        void Puffs(Vector3 at, Vector3 up, Vector3 a, Vector3 c, float R, float spread, float high, int count, Color light, Vector3 windWay)
+        {
+            for (int k = 0; k < count; k++)
+            {
+                float turn = Chance() * 6.2832f, out_ = Mathf.Sqrt(Chance());
+                Vector3 way = a * Mathf.Cos(turn) + c * Mathf.Sin(turn);
+                one.position = at + way * (out_ * spread) + up * (high * Chance());
+                one.velocity = up * (0.5f + 2.5f * Chance()) + way * (0.5f + 2f * Chance()) + windWay * 0.6f;
+                one.startSize = (0.5f + 1f * Chance()) * Mathf.Clamp(R * 0.6f, 1.2f, 30f);
+                one.startLifetime = 5f + 10f * Chance();
+                one.rotation = Chance() * 360f;
+                one.startColor = new Color(light.r, light.g, light.b, 0.07f + 0.09f * Chance());
+                mist.Emit(one, 1);
+            }
+        }
+
         /// <summary>How much spray (1 as the wind has it; 0: none).</summary>
         public static float Much = 1f;
         /// <summary>(For finding faults: the light the puffs were last given.)</summary>
@@ -267,6 +593,7 @@ namespace NaturalOcean
             Alive = mist.particleCount + drops.particleCount;
             LastLight = light;
             if (thrown.Count > 0 && Much > 0f) Splashes(light); else thrown.Clear();
+            if (impacts.Count > 0) Impacts(light, wind, windTo, first, second);
             counted += seconds;
             if (counted > 1f) { Bursts = burstsNow; burstsNow = 0; counted = 0f; }
             // (Any breaking water throws some spray; from a strong breeze the wind takes the tops off as well, and from a gale

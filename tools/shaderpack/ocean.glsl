@@ -42,6 +42,11 @@ uniform vec4 _FoamAtB;        // and in maps 2 and 3
 uniform sampler2D _OceanFoamMap;  // the white water: four maps, one in each number (1: breaking this moment)
 uniform vec4 _OceanBreaks;    // the squeeze below which a breaker of each size of wave begins: the second patch to the fifth (-9: that size does not break), as the white water has it
 uniform vec4 _OceanBreakHow;  // x: how much less squeezed than that a crest still carries a running front; y: how much of the longer patches' squeeze counts with a patch's own; z: over how much squeeze a wave goes from not breaking to breaking outright; w: how large the lip a breaking crest throws is, against how high that size of wave runs
+uniform vec4 _OceanDentAt;    // a blow's dent (Dents.cs): xy its middle, m from the point under the camera on the sea's two axes; z one over its side, 1/m; w 1 if there is one
+uniform sampler2D _OceanDent;    // the dent: r how high the water stands, m; gb its slope along the sea's two axes (as it lies, moved sideways too); a how steep it is
+uniform sampler2D _OceanDentMove; // the dent's water moved sideways (rg, m, along the sea's two axes); b where its rings break; a how steep it is
+uniform vec4 _OceanDentMid;   // the crater's middle, where it was deepest (xy, m from the point under the camera), and the way the craft came (zw): the dent's rings run out from there
+uniform vec4 _OceanDentCurl;  // a breaking ring's lip: x how large against how high the ring stands (0: none); y the dent's points apart, m; z how far the leading ring's lip has come down (0 to 1); w one over how much longer the crater was along the way the craft came
 in vec3 in_POSITION0;         // a point of a ring, in its own cells (y: 1 on the outermost ring's rim, to be pushed out to the horizon)
 out vec3 vs_TEXCOORD0;        // the point of the surface, in the scene
 out vec4 vs_TEXCOORD1;        // xy: where it stood on the sea's two axes before the waves moved it (m from the point under the camera); z: how far off the camera sees it; w: how fine the mesh is there (m)
@@ -338,7 +343,8 @@ vec3 wavesAt(vec2 spot, float fine, float deep, float rimmed, out vec4 lipSaid, 
         // (only where the mesh can hold the shape: with its points gathered to the curl (see main) some six of them round
         // the outside of it at the least. Coarser than that the curl only begins; coarser still, nothing.)
         float holds = 1.0 - smoothstep(0.55, 1.5, fine / max(size, 1e-3));
-        bool may = begins > -8.0 && own + _OceanBreakHow.y * longer < min(0.5 * carried, -0.02) && holds * _OceanWind.w > 0.001 && rimmed < 0.5;
+        // (for finding what the sea costs, from the development build: test 43 leaves the curls out)
+        bool may = begins > -8.0 && own + _OceanBreakHow.y * longer < min(0.5 * carried, -0.02) && holds * _OceanWind.w > 0.001 && rimmed < 0.5 && abs(_OceanShore.y - 43.0) > 0.5;
         for (int once = may ? 0 : 1; once < 1; once++)
         {
             float apart = 1.0 / (one * _OceanLay.z);
@@ -416,6 +422,71 @@ vec3 wavesAt(vec2 spot, float fine, float deep, float rimmed, out vec4 lipSaid, 
     return moved;
 }
 
+// The way a blow's rings run at a place (Dents.cs): out from the crater's middle, across the ellipse a slanting blow's
+// rings make (drawn out along the way the craft came by how much longer its crater was).
+vec2 dentOutward(vec2 spot)
+{
+    vec2 from = spot - _OceanDentMid.xy;
+    vec2 athwart = vec2(-_OceanDentMid.w, _OceanDentMid.z);
+    vec2 runs = _OceanDentMid.zw * (dot(from, _OceanDentMid.zw) * _OceanDentCurl.w * _OceanDentCurl.w) + athwart * dot(from, athwart);
+    float long_ = length(runs);
+    return long_ > 1e-4 ? runs / long_ : _OceanDentMid.zw;
+}
+
+// A blow's dent at a place (Dents.cs): how far its water is moved there (m: along the first axis, up, along the second);
+// and of a ring of it going over there, as wavesAt says of a crest: `lipSaid`, `lipPull`, and the way the ring runs
+// (`lipWay`). A ring's crest is found as a wave's is, along the way it runs; where it is steep past breaking at its crest
+// it throws the sea's own lip (curlAt), as large as it stands high, where the mesh can hold it; the leading ring's lip
+// comes down as it runs on (Dents.cs says when), and what breaks after it spills.
+vec3 dentAt(vec2 spot, float fine, out vec4 lipSaid, out vec3 lipPull, out vec2 lipWay)
+{
+    lipSaid = vec4(1.0, 0.0, 0.0, 0.0);
+    lipPull = vec3(0.0);
+    lipWay = _OceanWind.xy;
+    vec3 moved = vec3(0.0);
+    vec2 inDent = (spot - _OceanDentAt.xy) * _OceanDentAt.z + 0.5;
+    bool there = _OceanDentAt.w > 0.5 && inDent.x > 0.0 && inDent.y > 0.0 && inDent.x < 1.0 && inDent.y < 1.0;
+    for (int once = there ? 0 : 1; once < 1; once++)
+    {
+        vec4 d = textureLod(_OceanDent, inDent, 0.0);
+        vec4 m = textureLod(_OceanDentMove, inDent, 0.0);
+        moved = vec3(m.r, d.r, m.g);
+        vec2 outward = dentOutward(spot);
+        float apart = _OceanDentCurl.y;
+        vec2 st = outward * (apart * _OceanDentAt.z);
+        float hF = textureLod(_OceanDent, inDent + st, 0.0).r, hB = textureLod(_OceanDent, inDent - st, 0.0).r;
+        float rises = (hF - hB) / (2.0 * apart);
+        float bends = (hF - 2.0 * d.r + hB) / (apart * apart);
+        // (how far out of the crest's line this point lies, m: inside it, below nought)
+        float ahead = clamp(rises / min(bends, -1e-6), -6.0 * apart, 6.0 * apart);
+        vec4 c = textureLod(_OceanDent, inDent - outward * (ahead * _OceanDentAt.z), 0.0);
+        float size = _OceanDentCurl.x * max(c.r, 0.0);
+        // (a crest, and a sharp one: bending about as a wave as high and as steep does at its crest (its height times its
+        // wave number squared, and the steepness is the height times the wave number))
+        float usual = c.a * c.a / max(c.r, 0.05);
+        float sure = smoothstep(0.3, 0.7, -bends / max(usual, 1e-4));
+        float holds = 1.0 - smoothstep(0.55, 1.5, fine / max(size, 1e-3));
+        float much = clamp(smoothstep(0.42, 0.56, c.a) * sure * holds * step(0.2, size), 0.0, 1.0);
+        for (int lip = much > 0.001 ? 0 : 1; lip < 1; lip++)
+        {
+            vec4 mF = textureLod(_OceanDentMove, inDent + st, 0.0), mB = textureLod(_OceanDentMove, inDent - st, 0.0);
+            float left = clamp(1.0 + dot(mF.rg - mB.rg, outward) / (2.0 * apart), 0.5, 1.0);
+            float u = ahead / max(size, 1e-3);
+            float fallen = _OceanDentCurl.z;
+            vec2 shape = curlAt(u, left, much, fallen);
+            vec2 lipMoved = size * (shape - vec2(left * u, 0.0));
+            moved += vec3(outward.x * lipMoved.x, lipMoved.y, outward.y * lipMoved.x);
+            vec2 runs = curlAt(u + 0.04, left, much, fallen) - shape;
+            vec2 plainRuns = vec2(left * 0.04, rises * 0.04);
+            float by = atan(runs.y, runs.x) - atan(plainRuns.y, plainRuns.x);
+            lipSaid = vec4(cos(by), much, u, sin(by));
+            lipPull = vec3(u, size, much);
+            lipWay = outward;
+        }
+    }
+    return moved;
+}
+
 void main()
 {
     vec3 cellAt = in_POSITION0;
@@ -442,6 +513,16 @@ void main()
     vec4 lipSaid, lipWhy;
     vec3 lipPull;
     vec3 moved = wavesAt(spot, fine, deep, in_POSITION0.y, lipSaid, lipPull, lipWhy);
+    // (a blow's dent: its water's moves, and a ring of it going over; of its lip and the waves' the larger is the one the
+    // mesh is gathered to and the light told of)
+    vec4 dentSaid;
+    vec3 dentPull;
+    vec2 dentWay;
+    vec3 dented = dentAt(spot, fine, dentSaid, dentPull, dentWay);
+    bool dentLip = dentSaid.y > lipSaid.y;
+    vec2 pullWay = dentLip ? dentWay : _OceanWind.xy;
+    lipSaid = dentLip ? dentSaid : lipSaid;
+    lipPull = dentLip ? dentPull : lipPull;
     // ---- The mesh's points gathered to a curl. A curl is a size or two across and wants a dozen points round it to be
     // round; the mesh has one every fiftieth of the way to the camera, which sixty metres off is a point a metre. With
     // two or three points to bend, a curl was a step: the cliff of the user's drawing. So where a point of the mesh
@@ -463,10 +544,14 @@ void main()
         // the curl is round without this; and there, gathered all the same, the long thin triangles it makes between a
         // point that was moved and a neighbour that was not showed from inside the hollow as shards of glass.)
         float needed = smoothstep(0.04, 0.14, fine / max(lipPull.y, 1e-3));
-        spot += _OceanWind.xy * ((goesTo - lipPull.x) * lipPull.y * smoothstep(0.0, 0.3, lipPull.z) * needed);
+        spot += pullWay * ((goesTo - lipPull.x) * lipPull.y * smoothstep(0.0, 0.3, lipPull.z) * needed);
         ground = groundAt(spot);
         deep = max(-ground, 0.0);
         moved = wavesAt(spot, fine, deep, in_POSITION0.y, lipSaid, lipPull, lipWhy);
+        dented = dentAt(spot, fine, dentSaid, dentPull, dentWay);
+        dentLip = dentSaid.y > lipSaid.y;
+        lipSaid = dentLip ? dentSaid : lipSaid;
+        lipPull = dentLip ? dentPull : lipPull;
     }
     // ---- the surf (only near a shore: where the water is shallow or the ground stands a little above it)
     vec4 surf = vec4(0.0);
@@ -508,6 +593,8 @@ void main()
         }
     }
     moved *= _OceanShore.x;
+    // ---- a blow's dent: the crater a craft digs going in, its walls running back, the rings it sends out (Dents.cs, dentAt)
+    moved += dented;
     // (There was a roller here: the mesh raised where the white water's maps had a front, a hand high and then, to make
     // the crests look as if they broke, a man's height. "Those white spots just create a taller mound. They rise up and
     // then lower. They don't actually curve over themselves." It is gone: a breaking crest is the lip above.)
@@ -532,7 +619,8 @@ void main()
     vs_TEXCOORD1 = vec4(spot, clip.w, fine);
     vs_TEXCOORD2 = clip;
     vs_TEXCOORD3 = vec4(ground, surf.yzw);
-    vs_TEXCOORD4 = vec4(lipSaid.x, lipSaid.y * _OceanShore.x, lipSaid.z, lipSaid.w);
+    // (a lip of a blow's ring is told by its much below nought: the light turns it the way the ring runs, not down the wind)
+    vs_TEXCOORD4 = vec4(lipSaid.x, dentLip ? -lipSaid.y : lipSaid.y * _OceanShore.x, lipSaid.z, lipSaid.w);
     if (_OceanShore.y > 8.5 && _OceanShore.y < 29.5) vs_TEXCOORD4 = lipWhy;
 }
 #endif
@@ -579,6 +667,10 @@ uniform vec4 _WeedUp;         // which way is up at the point of the sea under t
 uniform vec4 _WeedFirst;      // the sea's first level axis in that frame
 uniform vec4 _WeedSecond;     // and its second
 uniform vec4 _OceanFoam;      // x: how readily the crests whiten (0 none; 1 as the wind has it); y: 1 if the game keeps its picture as numbers for the screen (gamma), 0 as light; z: the squeeze below which the water is breaking; w: the sea's clock, seconds (wrapped)
+uniform vec4 _OceanDentAt;    // a blow's dent (Dents.cs): as in the vertex program
+uniform sampler2D _OceanDent;
+uniform vec4 _OceanDentMid;   // (as in the vertex program: which way a ring's lip is thrown)
+uniform vec4 _OceanDentCurl;
 uniform sampler2DArray _OceanSlope;   // each patch: rg the surface's slope along the two axes; b: how squeezed the water is (0 not at all, -1 to nothing); a: the two slopes' squares added
 uniform vec4 _FoamAtA;        // the white water's maps (Foam.cs, oceanfoam.glsl): where the point of the sea under the camera is in maps 0 (xy) and 1 (zw), in pictures
 uniform vec4 _FoamAtB;        // and in maps 2 and 3
@@ -590,6 +682,8 @@ uniform vec4 _OceanLaceCount;  // how many whole times the lace has come round b
 uniform vec4 _OceanLaceCountB; // the same for the lace as it is being turned to
 uniform vec4 _OceanLaceTurn;  // xy: the way the lace is laid (the wind's, in the sea's two axes: the lace is stretched along it); zw: the way it is being turned to
 uniform vec4 _OceanLaceMix;   // x: how far it has been turned to the second way (0 to 1); y: how many times longer along the wind than across; zw: spare
+uniform vec4 _OceanGust;      // gusts on the water and slicks: xy how far the gusts' pattern has drifted down the wind (m, wrapped every 1024); z how patchy the ripples are (0 even, 1 most); w how much calm slick there is
+uniform vec4 _OceanRain;      // x: how hard it rains on the sea here (0 to 1, 1 a cloudburst of 50 mm an hour); y: the clock for the drops' rings (s, wrapped)
 uniform vec4 _OceanStreak;    // the streaks of foam down the wind: x how much of the sea is streaked (0 none); y one over the width their pattern repeats at (1/m); z how many times shorter the pattern is taken along the wind
 uniform vec4 _OceanStreakAt;  // where the point of the sea under the camera is in the streaks' pattern: xy as the lace is laid, zw as it is being turned to
 uniform sampler2D _OceanFoamMap;  // the white water: four maps, one in each number, each coarser and wider than the last
@@ -600,6 +694,13 @@ uniform vec4 _OceanMirrorW;   // w: how many smaller copies the picture has
 uniform sampler2D _OceanMirror;   // that picture, half size, with smaller copies
 uniform sampler2D _OceanScene;    // what the camera had drawn before the sea (the ground and what stands on it)
 uniform sampler2D _CameraDepthTexture;
+uniform sampler2D _OceanFarDepth; // where the game draws with two cameras (OpenGL): the far camera's depth picture, kept for the near camera's sea (Sea.cs, FarDepth)
+uniform sampler2D _OceanFarScene; // and that camera's picture as it was before it drew its own sea
+uniform vec4 _WeatherVeilAir;       // the weather in the air (Natural Light's veil, handed to every shader): x how thick (the light lost in each metre; 0: none); y its top, above the camera (m); z how soon it thins out above its top (m)
+uniform vec4 _WeatherVeilColour;    // rgb: its own light, lit from all round (as it shows)
+uniform vec4 _WeatherVeilSun;       // xyz: towards the sun, in the scene; w: how strongly what is in the air throws light forward
+uniform vec4 _WeatherVeilSunColour; // rgb: what the sun adds to it looking straight towards the sun (as it shows)
+uniform vec4 _OceanFarZ;          // xy: that camera's own _ZBufferParams.zw; z: how far it sees, m; w: how far the near camera sees, m (0: one camera draws everything, and there is no such picture)
 in vec3 vs_TEXCOORD0;
 in vec4 vs_TEXCOORD1;
 in vec4 vs_TEXCOORD2;
@@ -649,8 +750,12 @@ vec3 lastSeen(vec3 way, float blur, out float there)
 {
     float w = dot(_OceanMirrorW.xyz, way);
     vec2 uv = vec2(dot(_OceanMirrorX.xyz, way), dot(_OceanMirrorY.xyz, way)) / max(w, 1e-4) * 0.5 + 0.5;
-    vec2 edge = min(uv, 1.0 - uv);
-    there = w > 1e-3 ? smoothstep(0.0, 0.14, min(edge.x, edge.y)) * _OceanMirrorX.w : 0.0;
+    // (Off the picture's side, what lies at the same height just inside it: the sky changes slowly from side to side. The
+    // plain sky put in its place there was another brightness (at dusk twice as bright), and the sea brightened towards both
+    // sides of the picture in two upright bands. Off its top or bottom nothing of it is known, and the plain sky is used.)
+    uv.x = clamp(uv.x, 0.02, 0.98);
+    float edge = min(uv.y, 1.0 - uv.y);
+    there = w > 1e-3 ? smoothstep(0.0, 0.14, edge) * _OceanMirrorX.w : 0.0;
     vec3 seen = textureLod(_OceanMirror, clamp(uv, vec2(0.0), vec2(1.0)), blur).rgb;
     if (_OceanFoam.y > 0.5) seen = pow(max(seen, vec3(0.0)), vec3(2.2));
     return seen;
@@ -714,6 +819,100 @@ vec4 laceVaried(vec2 u, vec2 dx, vec2 dy)
     return clamp(vec4(0.5) + sum / sqrt(max(strength, 1e-4)), 0.0, 1.0);
 }
 
+// The rings a raindrop leaves on water. Of all the drops of a rain only the large ones (two millimetres and more, a few in a
+// thousand) leave rings one can pick out; each sends a ring of ripples out at the speed of the slowest ripples on water (a
+// quarter of a metre a second, at about two centimetres from crest to crest), dying in a fraction of a second. The water
+// pinned in cells of `cell` metres, now and then a drop in each at a place and a moment of its own; given: the slope the
+// rings add there. `rate`: such drops a square metre a second.
+// (a number from 0 to 1 that a cell and a salt give by chance)
+float ringChance(vec2 c, float salt)
+{
+    vec3 q = fract(vec3(c.xyx) * vec3(0.1031, 0.1030, 0.0973) + salt);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+// Smooth noise from 0 to 1 over the sea, `cells` lattice cells to every 1024 m and repeating there (the place it is read
+// at wraps every 1024 m), with a quintic blend so that no lattice line shows.
+float pawNoise(vec2 p, float cells)
+{
+    vec2 q = p * (cells / 1024.0);
+    vec2 i = floor(q), f = q - i;
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    vec2 i0 = mod(i, cells), i1 = mod(i + 1.0, cells);
+    float a = ringChance(i0, 0.13), b = ringChance(vec2(i1.x, i0.y), 0.13), c = ringChance(vec2(i0.x, i1.y), 0.13), d = ringChance(i1, 0.13);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+vec2 rainRings(vec2 at, float cell, float clock, float rate)
+{
+    vec2 slope = vec2(0.0);
+    vec2 base = floor(at / cell);
+    float period = 1.0 / max(rate * cell * cell, 0.02);
+    for (int j = -1; j <= 1; j++)
+        for (int i = -1; i <= 1; i++)
+        {
+            vec2 c = base + vec2(float(i), float(j));
+            float hx = ringChance(c, 0.0), hy = ringChance(c, 0.37), hz = ringChance(c, 0.71);
+            float t = mod(clock + hz * period, period);
+            if (t > 0.7) continue;
+            vec2 d = at - (c + vec2(hx, hy)) * cell;
+            float r = length(d);
+            float front = 0.24 * t;
+            float x = r - front;
+            float env = exp(-x * x / (0.0003 + 0.004 * t)) * exp(-t / 0.22) / (1.0 + 25.0 * front);
+            slope += (r > 1e-4 ? d / r : vec2(0.0)) * 0.55 * env * cos(314.16 * x);
+        }
+    return slope;
+}
+
+// How much weather lies along so many metres of a line that climbs mu a metre, where the weather thins out by e every
+// "soft" metres of height, counted in metres of it as thick as it is at the line's start (as in veil.glsl).
+float veilThinning(float len, float mu, float soft)
+{
+    float k = len * mu / soft;
+    return abs(k) < 0.001 ? len * (1.0 - 0.5 * k) : soft / mu * (1.0 - exp(-k));
+}
+
+// And along a line from a camera above the weather's top, "top" metres under it (below nothing), staying above it, as
+// veil.glsl has it: each power of e is of a height above the top and at most 1. (Written as the weather where the camera
+// is times veilThinning(), a camera a few hundred metres over a shallow fog had nothing times infinite, which is not a
+// number: the whole sea, and everything in front of it, came out black.)
+float veilThinningAbove(float top, float len, float mu, float soft)
+{
+    float k = len * mu / soft;
+    float here = exp(top / soft);
+    return abs(k) < 0.001 ? here * len * (1.0 - 0.5 * k) : soft / mu * (here - exp((top - len * mu) / soft));
+}
+
+// How far off the first solid thing behind a point of the picture is (m, along the camera's axis); 1e7: nothing.
+// The game on OpenGL draws what is near with one camera (to 400 m) and what is far with another, and each knows how far
+// off things are only within its own sight. A point of the sea 390 m off, drawn by the near camera, has its bottom 395 m
+// or 420 m off: past the near camera's sight, so that camera's depth picture has nothing there. Taken for a bottom at
+// 400 m, the sea went clear in a line across the picture; taken for deep water (as it then was), every shallow lying
+// across the hand-over turned the navy of the open sea in a wedge with a ruled edge, its point on the shore. So where the
+// camera drawing has nothing within its sight, the far camera's own depth picture is asked, kept from when it drew (the
+// two cameras stand at the same place and look the same way: the same point of the picture in both). `byFar`: 1 if it
+// was: then what is seen there under the water is to be taken from the far camera's picture as it was BEFORE that camera
+// drew its own sea (_OceanFarScene), not from the picture so far: the two cameras' sights overlap by three metres, both
+// draw the sea there, and the near one's water over the far one's was the bottom seen through water twice, a dark thread
+// across the shallows along the hand-over.
+float behindAt(vec2 uv, out float byFar)
+{
+    byFar = 0.0;
+    float behind = 1.0 / (_ZBufferParams.z * texture(_CameraDepthTexture, uv).r + _ZBufferParams.w);
+    if (behind > 0.998 * _ProjectionParams.z)
+    {
+        behind = 1e7;
+        for (int once = _OceanFarZ.w > 0.5 ? 0 : 1; once < 1; once++)
+        {
+            float further = 1.0 / (_OceanFarZ.x * texture(_OceanFarDepth, uv).r + _OceanFarZ.y);
+            if (further < 0.985 * _OceanFarZ.z) { behind = further; byFar = 1.0; }
+        }
+    }
+    return behind;
+}
+
 void main()
 {
     vec3 p = vs_TEXCOORD0;
@@ -745,40 +944,104 @@ void main()
     vec2 slope = vec2(0.0);
     float squeeze = 0.0, rough = 0.0;
     float one = _OceanLay.x;
+    // ---- gusts on the water, and slicks. The wind is never even: its gusts sweep over the sea in patches tens to hundreds
+    // of metres across that roughen the short waves and ripples where they are (the darker patches sailors call cat's
+    // paws), and drift down the wind; between them the ripples die away in seconds. And where the surface is calm enough,
+    // a film of the sea's own oils lies in long smooth streaks down the wind, slicks that shine like a mirror. Both are
+    // most of what one sees of a light breeze from afar; in a strong wind the sea is rough all over. (The long waves and
+    // the swell are not touched: they do not answer a gust.) Without it a light sea was one even sheen, like oil.
+    float gust = 1.0;
+    for (int once = _OceanGust.z > 0.01 ? 0 : 1; once < 1; once++)
+    {
+        // (a smooth pattern of the shader's own, in three sizes, 512, 171 and 64 m, each repeating every 1024 m as the
+        // place it is laid by does; the foam's lace, first used for it, is laid on a square lattice, and from afar its
+        // blotches lined up into a tiled floor)
+        vec2 drifted = _OceanAtSpot.xy + spot - _OceanGust.xy;
+        float fbm = 0.55 * pawNoise(drifted, 2.0) + 0.3 * pawNoise(drifted + 311.0, 6.0) + 0.15 * pawNoise(drifted + 97.0, 16.0);
+        // (from high up the 1024 m that pattern repeats at is a few dozen pixels, and it showed as a grid of dots in the sun's
+        // path (2026-10-14: "clouds and ocean look horrible from far away"). Where a pixel is metres wide the gusts and slicks
+        // are read from the planet itself, which never repeats, at the sizes a sea shows them from the air: patches and rows
+        // of a few hundred metres to kilometres. They hardly drift in the time one looks down from so high.)
+        float farFrom = smoothstep(1.5, 6.0, across);
+        for (int far_ = farFrom > 0.001 ? 0 : 1; far_ < 1; far_++)
+        {
+            vec3 onPlanet = normalize(_WeedUp.xyz * _WeedUp.w + _WeedFirst.xyz * spot.x + _WeedSecond.xyz * spot.y) * _WeedUp.w;
+            float fbmFar = 0.5 * weedSlow(onPlanet / 2600.0) + 0.3 * weedSlow(onPlanet / 850.0 + 17.0) + 0.2 * weedSlow(onPlanet / 290.0 + 41.0);
+            fbm = mix(fbm, fbmFar, farFrom);
+        }
+        float paw = smoothstep(0.36, 0.72, fbm);
+        gust = mix(1.0, mix(0.15, 1.7, paw), _OceanGust.z);
+    }
     for (int n = 0; n < 8; n++)
     {
         // (which of the patch's smaller copies a pixel here wants; past the last of them there is nothing left of it but its roughness)
         float level = log2(max(across * one * _OceanLay.z, 1e-6));
         float kept = clamp(0.45 * deep / max(high[n], 1e-3), 0.0, 1.0);
         float gone = 2.0 * all[n];
-        for (int once = level < 5.5 ? 0 : 1; once < 1; once++)
+        // (A patch whose tile is a few dozen pixels across or less is not drawn wave by wave. One tile repeats, and with
+        // every smaller patch already smoothed away it is all that is left of the sea's shape: from the air its repeats
+        // lined up into a grid of bright dots in the sun's path (from 10 km the 147 m patch, from 30 km the 514 m one).
+        // Its slopes go into the roughness instead, where they widen the mirror as a real sea's do: the sun's path from
+        // high up is one broad sheen. Near the camera only the ripples, tens of tiles to the metre, go so.)
+        float shown = smoothstep(16.0, 48.0, 1.0 / max(across * one, 1e-6));
+        for (int once = level < 5.5 && shown > 0.001 ? 0 : 1; once < 1; once++)
         {
             vec4 a = textureGrad(_OceanSlope, vec3(ats[n].xy + spot * one, float(n)), dx * one, dy * one);
             vec4 b = textureGrad(_OceanSlope, vec3(ats[n].zw + turned * one, float(n)), tdx * one, tdy * one);
-            slope += (a.rg + vec2(tc * b.r + ts * b.g, tc * b.g - ts * b.r)) * kept;
-            squeeze += (a.b + b.b) * step(float(n) + 0.5, _OceanLay.w) * kept;
+            // (the short waves only answer the gusts: the 42 m patch a little, the shorter ones wholly)
+            float answers = mix(1.0, gust, clamp(float(n) - 2.7, 0.0, 1.0));
+            slope += (a.rg + vec2(tc * b.r + ts * b.g, tc * b.g - ts * b.r)) * kept * answers * shown;
+            squeeze += (a.b + b.b) * step(float(n) + 0.5, _OceanLay.w) * kept * shown;
             // (nothing is taken away where the patch is seen larger than it is kept: there the squares between two points are only smoothed)
-            gone = (max(a.a - dot(a.rg, a.rg), 0.0) + max(b.a - dot(b.rg, b.rg), 0.0)) * clamp(level + 1.0, 0.0, 1.0);
+            float lean = (max(a.a - dot(a.rg, a.rg), 0.0) + max(b.a - dot(b.rg, b.rg), 0.0)) * clamp(level + 1.0, 0.0, 1.0);
+            gone = mix(gone, lean, shown * shown);
         }
-        rough += gone * kept * kept;
+        float answersToo = mix(1.0, gust, clamp(float(n) - 2.7, 0.0, 1.0));
+        rough += gone * kept * kept * answersToo * answersToo;
         one *= _OceanLay.y;
     }
     float shore = _OceanShore.x;
     slope = slope * _OceanTwin.w * shore + vs_TEXCOORD3.yz;
+    if (_OceanDentAt.w > 0.5)
+    {
+        vec2 inDent = (spot - _OceanDentAt.xy) * _OceanDentAt.z + 0.5;
+        if (inDent.x > 0.0 && inDent.y > 0.0 && inDent.x < 1.0 && inDent.y < 1.0) slope += textureLod(_OceanDent, inDent, 0.0).gb;
+    }
     squeeze *= _OceanTwin.w * shore;
     rough = 0.0004 + rough * _OceanTwin.w * _OceanTwin.w * shore * shore;
+    // ---- rain on the sea. Each drop roughens the water where it falls with a ring of ripples a couple of centimetres long:
+    // near the camera the rings of the large drops are seen one by one; further off, where a pixel is wider than a ripple,
+    // all of them together are a fine roughness that dulls the sea's mirror (as a rain-swept sea looks matt and grey).
+    for (int once = _OceanRain.x > 0.003 ? 0 : 1; once < 1; once++)
+    {
+        float ringsSeen = 1.0 - smoothstep(0.006, 0.02, across);
+        // (the large drops: about six a square metre a second in a steady 5 mm an hour, more than in proportion as rain grows heavier)
+        float big = 60.0 * pow(_OceanRain.x, 1.3);
+        for (int near_ = ringsSeen > 0.01 ? 0 : 1; near_ < 1; near_++)
+            slope += ringsSeen * (rainRings(_OceanAtSpot.xy + spot, 0.35, _OceanRain.y, big) + 0.6 * rainRings(_OceanAtSpot.xy + spot + 17.0, 0.17, _OceanRain.y * 1.07 + 3.1, big * 2.0));
+        rough += 0.006 * clamp(_OceanRain.x * 3.0, 0.0, 1.0) * (1.0 - ringsSeen * 0.6);
+    }
     vec3 N = normalize(up - _OceanAxisA.xyz * slope.x - _OceanAxisB.xyz * slope.y);
     // ---- A crest going over (curlAt, in the vertex program). The waves' slopes know nothing of it: the surface is
     // turned here as the breaker's shape turns it, in the upright plane the wind lies in: over the top of the curl and
     // down its front, facing down at its tip, and inside the tube facing the tube's middle.
-    float lipMuch = vs_TEXCOORD4.y, lipAt = vs_TEXCOORD4.z;
+    float lipMuch = abs(vs_TEXCOORD4.y), lipAt = vs_TEXCOORD4.z;
     for (int once = lipMuch > 0.001 ? 0 : 1; once < 1; once++)
     {
         // (The water of the curl is drawn out smooth as it goes over: glass, with lines along the way it runs. The
         // ripples' slopes, which belong to the level sea, made crumpled foil of it; most of them are let go there.)
         float smoothed = lipMuch * smoothstep(-6.0, -3.0, lipAt) * (1.0 - smoothstep(3.7, 5.0, lipAt));
         N = normalize(mix(N, up, 0.8 * smoothed));
-        vec3 downwind = normalize(_OceanAxisA.xyz * _OceanWind.x + _OceanAxisB.xyz * _OceanWind.y);
+        // (a blow's ring throws its lip the way it runs, out from the crater's middle across its ellipse: see dentAt)
+        vec2 lipGoes = _OceanWind.xy;
+        if (vs_TEXCOORD4.y < 0.0)
+        {
+            vec2 fromMid = spot - _OceanDentMid.xy;
+            vec2 athwartMid = vec2(-_OceanDentMid.w, _OceanDentMid.z);
+            vec2 runsMid = _OceanDentMid.zw * (dot(fromMid, _OceanDentMid.zw) * _OceanDentCurl.w * _OceanDentCurl.w) + athwartMid * dot(fromMid, athwartMid);
+            lipGoes = length(runsMid) > 1e-4 ? normalize(runsMid) : _OceanDentMid.zw;
+        }
+        vec3 downwind = normalize(_OceanAxisA.xyz * lipGoes.x + _OceanAxisB.xyz * lipGoes.y);
         vec2 turn = vec2(vs_TEXCOORD4.x, vs_TEXCOORD4.w);
         float sure = length(turn);
         turn = sure > 1e-3 ? turn / sure : vec2(1.0, 0.0);
@@ -809,7 +1072,8 @@ void main()
     if (lift < 0.02) R = normalize(R + up * (0.02 - lift) * 2.0);
     // (the mean of what a rough sea's facets mirror lies higher than what a flat one would: the facets that tip the sky down
     // towards the eye are hidden behind their neighbours)
-    vec3 sky = skyMirrored(normalize(R + up * 0.5 * sigma), up, sigma);
+    // (for finding what the sea costs, from the development build: tests 41 and 42 leave the mirrored sky's readings out)
+    vec3 sky = abs(_OceanShore.y - 41.0) < 0.5 || abs(_OceanShore.y - 42.0) < 0.5 ? _OceanSkyTop.rgb : skyMirrored(normalize(R + up * 0.5 * sigma), up, sigma);
 
     // ---- the sun's path: every facet turned so as to mirror the sun, as many as there are at that tilt
     vec3 L = _OceanSun.xyz;
@@ -887,20 +1151,16 @@ void main()
 
     // ---- what is under the water, seen through it where it is shallow
     vec2 screen = gl_FragCoord.xy / _ScreenParams.xy;
-    float behind = 1.0 / (_ZBufferParams.z * texture(_CameraDepthTexture, screen).r + _ZBufferParams.w);
-    // (The game draws what is near with one camera and what is far with another, and each knows how far off things are only
-    // out to where its own sight ends: 400 m for the near one. Nothing there within that reach means deep water as far as
-    // this camera can tell, not a bottom at 400 m: taken for a bottom, the sea went clear in a line across the picture where
-    // the one camera hands over to the other.)
-    float reach = 0.985 * _ProjectionParams.z;
-    if (behind > reach) behind = 1e7;
+    // (how far off the bottom is: see behindAt for the two cameras)
+    float byFar;
+    float behind = behindAt(screen, byFar);
     float through = max(behind - vs_TEXCOORD1.z, 0.0);
     // (bent by the surface: looked up a little to one side of where it is)
     vec2 bent = screen + slope * 0.04 * clamp(through / 4.0, 0.0, 1.0) / max(vs_TEXCOORD1.z * 0.05, 1.0);
-    float behindBent = 1.0 / (_ZBufferParams.z * texture(_CameraDepthTexture, bent).r + _ZBufferParams.w);
-    if (behindBent > reach) behindBent = 1e7;
-    if (behindBent < vs_TEXCOORD1.z) bent = screen; else through = max(behindBent - vs_TEXCOORD1.z, 0.0);
-    vec3 under = texture(_OceanScene, bent).rgb;
+    float byFarBent;
+    float behindBent = behindAt(bent, byFarBent);
+    if (behindBent < vs_TEXCOORD1.z) { bent = screen; byFarBent = byFar; } else through = max(behindBent - vs_TEXCOORD1.z, 0.0);
+    vec3 under = byFarBent > 0.5 ? texture(_OceanFarScene, bent).rgb : texture(_OceanScene, bent).rgb;
     // (the game's picture is kept as numbers for the screen, not as light: turned to light here, and the sea's colour turned back at the end)
     if (_OceanFoam.y > 0.5) under = pow(max(under, vec3(0.0)), vec3(2.2));
     // (Beds of weed on the bottom, seen from above as the dark patches in pale water over sand: where they are is a matter of
@@ -909,7 +1169,7 @@ void main()
     // game's terrain, asked how high it stands, answers with bumps of several metres that its drawn ground, away from the
     // craft, does not have, and beds set by the asked depth lay in blocks that followed nothing one could see.)
     float bedShown = 0.0;
-    for (int once = through < 40.0 && behindBent < reach ? 0 : 1; once < 1; once++)
+    for (int once = through < 40.0 && behindBent < 1e6 ? 0 : 1; once < 1; once++)
     {
         vec3 bottom = _WorldSpaceCameraPos - V * (behindBent * far / max(vs_TEXCOORD1.z, 1e-3)) - _OceanMid.xyz;
         float below = dot(bottom, up);
@@ -960,6 +1220,8 @@ void main()
     // against the white here)
     float inner = clamp(under2 / max(white, 0.02), 0.0, 1.0);
     white *= shore; under2 *= shore;
+    // (rain knocks the sea down: it damps the short waves, as a film of oil does, and fewer crests break)
+    white *= 1.0 - 0.35 * clamp(_OceanRain.x * 3.0, 0.0, 1.0);
     // (A crest going over. The white water's maps lay the froth on the forward face from the crest's line down: on the
     // breaker's shape that is the lip's underside and the wall of the hollow, which are clear dark water in a real one,
     // with the froth at the lip's edge, where it tears into drops, and on the hollow's floor, where it comes down.)
@@ -975,7 +1237,7 @@ void main()
     // the thin sheet that runs up the sand and back. By the ground as the picture has it, so it lies exactly along the shore
     // that is seen.)
     float standing = max(behind - vs_TEXCOORD1.z, 0.0) * far / max(vs_TEXCOORD1.z, 1e-3) * max(dot(V, up), 0.0);
-    white = max(white, (1.0 - smoothstep(0.02, 0.35, standing)) * step(behind, reach) * step(0.0, dot(toEye, up)) * 0.7);
+    white = max(white, (1.0 - smoothstep(0.02, 0.35, standing)) * step(behind, 1e6) * step(0.0, dot(toEye, up)) * 0.7);
     // (the bubbles under: the water milky and green there, long after the white on top has gone)
     // (not on the curl, outside or in: that water has not been under a breaker yet)
     colour += (vec3(0.16, 0.50, 0.46) * lit * 0.55 - body) * clamp(under2 * 1.5, 0.0, 0.7) * (1.0 - mirror) * (1.0 - 0.85 * lipMuch * smoothstep(-5.0, -2.6, lipAt) * (1.0 - smoothstep(3.4, 4.0, lipAt)));
@@ -991,7 +1253,9 @@ void main()
     // makes streaked (a twentieth in a gale, a seventh in a storm), and more where breakers have lately been.
     float streaked = _OceanStreak.x * shore * step(0.02, deep);
     float order = 0.5, grain = 0.5, blotch = 0.5, lines = 0.5;
-    for (int once = white > 0.003 || streaked > 0.004 ? 0 : 1; once < 1; once++)
+    // (for finding what the sea costs, from the development build: tests 40 and 42 leave the foam's pattern out)
+    bool costFoam = abs(_OceanShore.y - 40.0) > 0.5 && abs(_OceanShore.y - 42.0) > 0.5;
+    for (int once = (white > 0.003 || streaked > 0.004) && costFoam ? 0 : 1; once < 1; once++)
     {
         float seenBig = 1.0 - smoothstep(0.04, 0.25, across * _FoamReach.z), seenFine = 1.0 - smoothstep(0.04, 0.25, across * _FoamReach.w);
         for (int way = 0; way < 2; way++)
@@ -1178,6 +1442,31 @@ void main()
         colour = _OceanShore.z > 0.5 ? from_below : mix(water, from_below, exp(-far / 45.0));
     }
     if (_OceanFoam.y > 0.5) colour = pow(max(colour, vec3(0.0)), vec3(1.0 / 2.2));
+    // ---- the weather in the air between the eye and the water: rain, snow, fog, dust (Natural Light's veil: its numbers,
+    // and the same sums as its own pass, veil.glsl). That pass is laid over a camera's picture before the sea is drawn,
+    // but for the far camera's of two, which comes after everything: so everywhere else the sea takes its veil here, by
+    // how far off the water is. Without it the sea within 400 m stood clear and dark in rain and fog, and grey beyond
+    // it, with a ruled line between. (Not from under the water: there is no air between.)
+    for (int once = _WeatherVeilAir.x > 0.0 && gl_FrontFacing && !(_OceanFarZ.w > 0.5 && _ProjectionParams.z > 0.5 * _OceanFarZ.z) ? 0 : 1; once < 1; once++)
+    {
+        float mu = -dot(V, up);
+        float top = _WeatherVeilAir.y, soft = max(_WeatherVeilAir.z, 1.0), tau;
+        if (top > 0.0)
+        {
+            float toTop = mu > 0.00001 ? top / mu : 1.0e9;
+            tau = far <= toTop ? far : toTop + veilThinning(far - toTop, mu, soft);
+        }
+        else
+        {
+            float toTop = mu < -0.00001 ? top / mu : 1.0e9;
+            tau = far <= toTop ? veilThinningAbove(top, far, mu, soft) : veilThinningAbove(top, toTop, mu, soft) + (far - toTop);
+        }
+        float veiled = 1.0 - exp(-_WeatherVeilAir.x * tau);
+        float g = clamp(_WeatherVeilSun.w, 0.0, 0.95);
+        float c = -dot(V, _WeatherVeilSun.xyz);
+        float lobe = (1.0 - g) * (1.0 - g) / pow(max(1.0 + g * g - 2.0 * g * c, 0.0001), 1.5) * (1.0 - g * g) / (1.0 + g);
+        colour = colour * (1.0 - veiled) + (_WeatherVeilColour.rgb + _WeatherVeilSunColour.rgb * lobe) * veiled;
+    }
     // (for finding faults, from the development build: one thing shown alone)
     if (_OceanShore.y > 0.5)
     {
