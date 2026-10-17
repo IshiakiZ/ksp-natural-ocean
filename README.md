@@ -8,6 +8,8 @@ half under.
 
 ![The sea in ten pictures, from a light air to a gale, the surf, under water, towards a low sun](src/NaturalOcean/img/ocean-tour.jpg)
 
+![The surf on the coast east of the space centre](src/NaturalOcean/img/natural-ocean-surf.gif)
+
 For Kerbal Space Program 1.12.x. **Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone) 0.8 or later**, a separate download
 ([on SpaceDock](https://spacedock.info/mod/4665/Keystone)): this mod does not load without it. With
 [Natural Weather](https://github.com/IshiakiZ/ksp-natural-weather), which is not needed, the sea goes by the weather's wind; without it,
