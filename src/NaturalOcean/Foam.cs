@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using Keystone;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -80,8 +81,11 @@ namespace NaturalOcean
         public static float Streaks = 0f;
         /// <summary>How strongly the wind's rolls gather the foam into rows (1 as worked out from the wind; 0: none).</summary>
         public static float Rows = 1f;
-        /// <summary>How fast the last thin foam goes in a whole gale, against 1 in light airs (the long-lived foam of water that has been breaking for hours is what the rows are made of).</summary>
-        public static float Lasts = 0.25f;
+        /// <summary>How fast the last thin foam goes in a whole gale, against 1 in light airs (the long-lived foam of water that has been breaking for hours is what the rows are made of).
+        /// 1 since 2026-10-20 (the owner: "way too much white water from looking from above"): at 0.25 the pale foam lay over half to three
+        /// quarters of a storm's sea (straight down from 490 m, foam over a fifth white on 24 and 36% of it at 24 and 28 m/s, any foam on 51
+        /// and 72%), where real seas have no more than about a tenth white (Callaghan 2008, Brumer 2017); at 1, 11 and 17% (4.5% at 20 m/s).</summary>
+        public static float Lasts = 1f;
         readonly System.Random chance = new System.Random(7);
         byte[] laceMade;
         Thread laceMaker;
@@ -192,6 +196,10 @@ namespace NaturalOcean
         public static bool SkipPasses;
         public static string Skip(string on) { SkipPasses = on == "1"; return "the white water's passes " + (SkipPasses ? "left out" : "drawn"); }
 #endif
+        /// <summary>The sea's two axes begun again at the camera's new place (Sea.cs): every map begun afresh at the next step, the
+        /// white water gone with the place it lay on.</summary>
+        public void Forget() { for (int l = 0; l < Maps; l++) begun[l] = false; }
+
         public void Step(Waves waves, Vector2d at, float high, double seconds, float ready, float windTo, float wind, float gravity, Material sea)
         {
 #if DEV
@@ -357,46 +365,53 @@ namespace NaturalOcean
         {
             there = seenTaken;
             if (!seenTaken) return default(Unity.Collections.NativeArray<Color32>);
-            // (Reading a picture back from the graphics card makes the game wait until the card has done everything it was
-            // given: measured, 2 to 6 ms of every frame, the dearest thing the sea did. Where the card can hand it back later
-            // without the wait (Direct3D, Metal), it is asked for so, and what came back last is used meanwhile; where it
-            // cannot (OpenGL, as on a Mac), it is read every fourth frame only, and the last reading used between: the spray
-            // is then placed by where the water was breaking up to a twentieth of a second before.)
-            if (SystemInfo.supportsAsyncGPUReadback)
+            // (Reading a picture back from the graphics card at once makes the game wait until the card has done everything it
+            // was given: measured, 2 to 6 ms of every frame, the dearest thing the sea did, and 6 to 12 ms of the main thread every
+            // fourth frame on the Mac. So it goes through Keystone's Readback: asked for, and taken some frames later, where the
+            // game can (Unity's own asynchronous read on Direct3D and Metal; on OpenGL, as on a Mac, Volumetric Explosions'
+            // library when it is installed), the last answer used meanwhile; where it cannot, read at once every fourth frame, as
+            // before. Either way the spray is placed by where the water was breaking a few frames before, and each answer carries
+            // where the picture's points stood when it was asked for: see SeenWhere.)
+            if (seenReader == null) seenReader = new Readback(SeenAcross, SeenAcross, false);
+            Taken();
+            if (askedAt != Time.frameCount && (seenReader.Later || !seenHad || ++seenSkipped >= 4)
+#if DEV
+                && (!SkipSeen || !seenHad)
+#endif
+                )
             {
-                if (!asking)
-                {
-                    asking = true;
-                    // (where each point of the picture stood when it was made, kept with it: see SeenWhere)
-                    int shiftX = seenShiftX, shiftZ = seenShiftZ;
-                    long[] atX = (long[])seenX.Clone(), atZ = (long[])seenZ.Clone();
-                    UnityEngine.Rendering.AsyncGPUReadback.Request(seen, 0, TextureFormat.RGBA32, request =>
-                    {
-                        asking = false;
-                        if (request.hasError || seenRead == null) return;
-                        seenRead.SetPixelData(request.GetData<Color32>(), 0);
-                        readShiftX = shiftX; readShiftZ = shiftZ;
-                        Array.Copy(atX, readX, Maps); Array.Copy(atZ, readZ, Maps);
-                        seenHad = true;
-                    });
-                }
-                there = seenHad;
-                return seenHad ? seenRead.GetRawTextureData<Color32>() : default(Unity.Collections.NativeArray<Color32>);
-            }
-            if (!seenHad || ++seenSkipped >= 4)
-            {
+                askedAt = Time.frameCount;
                 seenSkipped = 0;
-                RenderTexture before = RenderTexture.active;
-                RenderTexture.active = seen;
-                seenRead.ReadPixels(new Rect(0, 0, SeenAcross, SeenAcross), 0, 0, false);
-                RenderTexture.active = before;
-                readShiftX = seenShiftX; readShiftZ = seenShiftZ;
-                Array.Copy(seenX, readX, Maps); Array.Copy(seenZ, readZ, Maps);
-                seenHad = true;
+                SeenAt at = asks[askNext]; askNext = (askNext + 1) % asks.Length;
+                at.ShiftX = seenShiftX; at.ShiftZ = seenShiftZ; Array.Copy(seenX, at.X, Maps); Array.Copy(seenZ, at.Z, Maps);
+                seenReader.Ask(seen, 0, 0, SeenAcross, SeenAcross, at);
+                if (!seenReader.Later) Taken();
             }
-            return seenRead.GetRawTextureData<Color32>();
+            there = seenHad;
+            return seenHad ? seenRead.GetRawTextureData<Color32>() : default(Unity.Collections.NativeArray<Color32>);
         }
-        bool asking, seenHad;
+
+        /// <summary>Where the picture's points stood when it was asked for (kept round, as many as can be in flight).</summary>
+        sealed class SeenAt { public int ShiftX, ShiftZ; public readonly long[] X = new long[Maps], Z = new long[Maps]; }
+        readonly SeenAt[] asks = { new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(),
+                                   new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt(), new SeenAt() };
+        int askNext, askedAt = -1;
+        Readback seenReader;
+
+        /// <summary>An answer that has come back, taken in.</summary>
+        void Taken()
+        {
+            if (!seenReader.Take(out object tag) || !(tag is SeenAt at)) return;
+            seenRead.LoadRawTextureData(seenReader.Bytes);          // (not sent back to the card: it is only read here)
+            readShiftX = at.ShiftX; readShiftZ = at.ShiftZ;
+            Array.Copy(at.X, readX, Maps); Array.Copy(at.Z, readZ, Maps);
+            seenHad = true;
+        }
+        bool seenHad;
+#if DEV
+        /// <summary>(For the development build: the white water's read-back skipped after the first: to measure what it costs.)</summary>
+        internal static bool SkipSeen;
+#endif
         int seenSkipped, readShiftX, readShiftZ;
         readonly long[] readX = new long[Maps], readZ = new long[Maps];
 
@@ -485,6 +500,7 @@ namespace NaturalOcean
             for (int n = 0; n < 2; n++) if (fronts[n] != null) { fronts[n].Release(); UnityEngine.Object.Destroy(fronts[n]); }
             if (seen != null) { seen.Release(); UnityEngine.Object.Destroy(seen); }
             if (seenRead != null) UnityEngine.Object.Destroy(seenRead);
+            if (seenReader != null) { seenReader.Free(); seenReader = null; }
             if (work != null) UnityEngine.Object.Destroy(work);
             if (Lace != null) UnityEngine.Object.Destroy(Lace);
             commands.Release();

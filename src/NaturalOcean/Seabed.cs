@@ -47,7 +47,9 @@ namespace NaturalOcean
         static readonly int[] Round = { 5, 2, 1, 1 };
         readonly float[] line = new float[Across];
         readonly bool[] rough = new bool[Maps];
-        readonly int[] smoothedAt = new int[Maps];
+        readonly int[] smoothedAt = new int[Maps], sweptAt = new int[Maps];
+        /// <summary>(Swept only now and then while its points come in; false for setting it against the old way, development build.)</summary>
+        public static bool GateSweep = true;
         readonly ushort[] rawSmooth = new ushort[Across * Across * 4];
         public readonly Texture2D Deeps;
         bool smoothChanged;
@@ -56,9 +58,36 @@ namespace NaturalOcean
         bool timesChanged;
         float gravity = 9.81f;
         string placedOn = "";
-        /// <summary>How many points may be asked in a frame.</summary>
+        /// <summary>How many points may be asked in a frame, and in how long at the most (ms).</summary>
         public int Budget = 320;
+        const double AskMs = 1.0;
+        static readonly System.Diagnostics.Stopwatch askWatch = new System.Diagnostics.Stopwatch();
         public int Waiting { get { int sum = 0; for (int l = 0; l < Maps; l++) sum += waiting[l].Count; return sum; } }
+#if DEV
+        // (Development build, 2026-10-18: each of the step's jobs timed, its mean, its worst and when that was (seconds since the
+        // game began), to see which made the seabed's worst frame of 160 ms in a climb (the rendering chat's read-out))
+        static readonly string[] jobs = { "anew", "strips", "asked", "map up", "smooth", "deeps up", "sweep", "times up" };
+        static readonly double[] jobSum = new double[8], jobWorst = new double[8];
+        static readonly float[] jobWhen = new float[8];
+        static int jobFrames;
+        static readonly System.Diagnostics.Stopwatch jobWatch = new System.Diagnostics.Stopwatch();
+        static double jobLast;
+        static void Job(int k)
+        {
+            double now = jobWatch.Elapsed.TotalMilliseconds, d = now - jobLast;
+            jobLast = now;
+            jobSum[k] += d;
+            if (d > jobWorst[k]) { jobWorst[k] = d; jobWhen[k] = Time.realtimeSinceStartup; }
+        }
+        public static string Jobs()
+        {
+            var b = new System.Text.StringBuilder("seabed over " + jobFrames + " frames, ms (mean, worst at the game's second):");
+            for (int k = 0; k < jobs.Length; k++) b.Append(" | ").Append(jobs[k]).Append(' ').Append((jobSum[k] / Math.Max(1, jobFrames)).ToString("F3")).Append(", ").Append(jobWorst[k].ToString("F2")).Append(" at ").Append(jobWhen[k].ToString("F0"));
+            for (int k = 0; k < jobs.Length; k++) { jobSum[k] = 0; jobWorst[k] = 0; jobWhen[k] = 0; }
+            jobFrames = 0;
+            return b.ToString();
+        }
+#endif
 
         static readonly int idMap = Shader.PropertyToID("_OceanSeabed"), idAtA = Shader.PropertyToID("_SeabedAtA"), idAtB = Shader.PropertyToID("_SeabedAtB"), idCell = Shader.PropertyToID("_SeabedCell"), idTimes = Shader.PropertyToID("_OceanSurfTime"), idDeeps = Shader.PropertyToID("_OceanSurfDeep");
 
@@ -88,6 +117,10 @@ namespace NaturalOcean
         }
 
         static int Wrap(long v) => (int)(((v % Across) + Across) % Across);
+
+        /// <summary>The sea's two axes begun again at the camera's new place (Sea.cs, after it has jumped a long way): every map
+        /// placed anew at the next step, as on another world, its points deep water until they are asked again.</summary>
+        public void Forget() => placedOn = "";
         static float Part(double where, double side) => (float)((where / side) - Math.Floor(where / side));
 
         /// <summary>The ground's height against the sea's level at a place on the sea's two axes (m): from the finest map that has it; deep water where none has.</summary>
@@ -117,16 +150,40 @@ namespace NaturalOcean
         public void Step(CelestialBody body, Vector2d at, Vector3d mid, Vector3d first, Vector3d second, Vector3d up, Material sea, Material foam)
         {
             if (placedOn != body.bodyName) { placedOn = body.bodyName; for (int l = 0; l < Maps; l++) begun[l] = false; }
+#if DEV
+            jobWatch.Start(); jobLast = jobWatch.Elapsed.TotalMilliseconds; jobFrames++;
+            double anewMs = 0, stripsMs = 0;
+#endif
             var where = new float[8];
+            for (int l = 0; l < Maps; l++) placedAnew[l] = false;
             // (the coarsest first: a finer map's new points take what the next coarser has meanwhile)
             for (int l = Maps - 1; l >= 0; l--)
             {
                 double c = Cell[l];
                 long cx = (long)Math.Floor(at.x / c), cz = (long)Math.Floor(at.y / c);
                 const int Half = Across / 2;
-                if (!begun[l] || Math.Abs(cx - cellX[l]) >= Across || Math.Abs(cz - cellZ[l]) >= Across)
+#if DEV
+                double jobFrom = jobWatch.Elapsed.TotalMilliseconds;
+                bool anew = !begun[l] || Math.Abs(cx - cellX[l]) >= Across || Math.Abs(cz - cellZ[l]) >= Across;
+#endif
+                if ((!begun[l] || Math.Abs(cx - cellX[l]) >= Across || Math.Abs(cz - cellZ[l]) >= Across) && FastAnew && (l + 1 >= Maps || placedAnew[l + 1] || !begun[l + 1]))
+                {
+                    // (Since 2026-10-18: placed anew in the same frame as the next coarser map, or with none coarser, nothing finer than
+                    // deep water can be had for its points while they wait: so each is set so straight away, in plain loops, and
+                    // queued in rings outwards from the camera's from a list made once. Each point done through Reach, it was four
+                    // maps of 16,384 points in one frame after any jump of the camera.)
+                    waiting[l].Clear();
+                    cellX[l] = cx; cellZ[l] = cz; begun[l] = true; placedAnew[l] = true;
+                    if (smoothing == l) smoothing = -1;
+                    if (sweeping == l) sweeping = -1;
+                    Anew(l, cx, cz);
+                }
+                else if (!begun[l] || Math.Abs(cx - cellX[l]) >= Across || Math.Abs(cz - cellZ[l]) >= Across)
                 {
                     // (all of it anew, the nearest points first: rings outwards from the camera's own)
+                    placedAnew[l] = true;
+                    if (smoothing == l) smoothing = -1;
+                    if (sweeping == l) sweeping = -1;
                     waiting[l].Clear();
                     cellX[l] = cx; cellZ[l] = cz; begun[l] = true;
                     Reach(l, cx, cz);
@@ -152,19 +209,33 @@ namespace NaturalOcean
                             if (i < wasX - Half || i >= wasX + Half || j < wasZ - Half || j >= wasZ + Half) Reach(l, i, j);
                 }
                 where[2 * l] = Part(at.x, Across * c); where[2 * l + 1] = Part(at.y, Across * c);
+#if DEV
+                if (anew) anewMs += jobWatch.Elapsed.TotalMilliseconds - jobFrom; else stripsMs += jobWatch.Elapsed.TotalMilliseconds - jobFrom;
+#endif
             }
+#if DEV
+            // (the two kinds of placing, as each frame had them)
+            jobLast = jobWatch.Elapsed.TotalMilliseconds;
+            jobSum[0] += anewMs; if (anewMs > jobWorst[0]) { jobWorst[0] = anewMs; jobWhen[0] = Time.realtimeSinceStartup; }
+            jobSum[1] += stripsMs; if (stripsMs > jobWorst[1]) { jobWorst[1] = stripsMs; jobWhen[1] = Time.realtimeSinceStartup; }
+#endif
 
             // ---- as many points asked as the frame allows: the coarsest map first (it gives every finer one something to go on)
             if (body.pqsController != null)
             {
-                int left = Budget;
+                int left = Budget, done = 0;
                 double R = body.Radius;
+                // (and no more than a millisecond's worth: the game's own answer takes 7 microseconds a point where the terrain is
+                // built, and many times that where it is still being built, as after a scene is loaded or the camera has jumped,
+                // when 320 asks once took 110 ms of one frame)
+                askWatch.Reset(); askWatch.Start();
                 for (int l = Maps - 1; l >= 0 && left > 0; l--)
                 {
                     double c = Cell[l];
                     Queue<int> q = waiting[l];
                     while (left > 0 && q.Count > 0)
                     {
+                        if ((++done & 15) == 0 && done >= 32 && askWatch.Elapsed.TotalMilliseconds > AskMs) { left = 0; break; }
                         int n = q.Dequeue();
                         if (asked[l][n]) continue;
                         // (which place this point of the picture holds now: the one nearest the camera's own, the picture wrapping round)
@@ -185,21 +256,110 @@ namespace NaturalOcean
                     }
                 }
             }
+#if DEV
+            Job(2);
+#endif
             if (changed) { Map.SetPixelData(raw, 0); Map.Apply(false, false); changed = false; }
+#if DEV
+            Job(3);
+#endif
             // ---- the depth as a wave feels it, wherever the ground has been asked anew (while a map is still being asked, only now and then)
             frame++;
-            for (int l = Maps - 1; l >= 0; l--)
-                if (rough[l] && (waiting[l].Count == 0 || frame - smoothedAt[l] > 40)) { Smooth(l); rough[l] = false; smoothedAt[l] = frame; unsettled[l] = 8; break; }
+            // (a quarter of a smoothing a frame: see SmoothPart)
+            if (smoothing < 0)
+                for (int l = Maps - 1; l >= 0; l--)
+                    if (rough[l] && (waiting[l].Count == 0 || frame - smoothedAt[l] > 40)) { smoothing = l; smoothPart = 0; rough[l] = false; break; }
+            if (smoothing >= 0)
+            {
+                SmoothPart(smoothing, smoothPart++);
+                if (smoothPart >= 4) { smoothedAt[smoothing] = frame; unsettled[smoothing] = 8; smoothing = -1; }
+            }
+#if DEV
+            Job(4);
+#endif
             if (smoothChanged) { Deeps.SetPixelData(rawSmooth, 0); Deeps.Apply(false, false); smoothChanged = false; }
+#if DEV
+            Job(5);
+#endif
             // ---- the time to the shore: one sweep of one map, the coarsest that is still changing first
             gravity = (float)(body.GeeASL * 9.80665);
-            for (int l = Maps - 1; l >= 0; l--)
-                if (unsettled[l] > 0) { Sweep(l, sweep++ & 3); break; }
+            // (a quarter of a sweep a frame: see SweepRows)
+            // (While a map's points are still coming in, as for the fifteen seconds after a long jump, swept only now and then, as it is
+            // smoothed: every point that came in unsettled its map again, and its sweep ran all the while, 4-5 ms a frame on the whole
+            // after a jump 16 km out to sea, the next-five round's measure of 2026-10-18. Once its points are all in, as before.)
+            if (sweeping < 0)
+                for (int l = Maps - 1; l >= 0; l--)
+                    if (unsettled[l] > 0 && (!GateSweep || waiting[l].Count == 0 || frame - sweptAt[l] > 40)) { sweeping = l; sweepCorner = sweep++ & 3; sweepRow = 0; sweepAny = false; break; }
+            if (sweeping >= 0)
+            {
+                sweepAny |= SweepRows(sweeping, sweepCorner, sweepRow, Math.Min(Across, sweepRow + Across / 4));
+                sweepRow += Across / 4;
+                if (sweepRow >= Across)
+                {
+                    int l = sweeping;
+                    if (sweepAny) { unsettled[l] = 8; timesChanged = true; if (l > 0) unsettled[l - 1] = Math.Max(unsettled[l - 1], 4); }
+                    else unsettled[l]--;
+                    sweptAt[l] = frame;
+                    sweeping = -1;
+                }
+            }
+#if DEV
+            Job(6);
+#endif
             if (timesChanged) { Times.SetPixelData(rawTime, 0); Times.Apply(false, false); timesChanged = false; }
+#if DEV
+            Job(7);
+#endif
             var atA = new Vector4(where[0], where[1], where[2], where[3]); var atB = new Vector4(where[4], where[5], where[6], where[7]);
             var cells = new Vector4(Cell[0], Cell[1], Cell[2], Cell[3]);
             sea.SetTexture(idMap, Map); sea.SetTexture(idTimes, Times); sea.SetTexture(idDeeps, Deeps); sea.SetVector(idAtA, atA); sea.SetVector(idAtB, atB); sea.SetVector(idCell, cells);
             if (foam != null) { foam.SetTexture(idMap, Map); foam.SetTexture(idTimes, Times); foam.SetTexture(idDeeps, Deeps); foam.SetVector(idAtA, atA); foam.SetVector(idAtB, atB); foam.SetVector(idCell, cells); }
+        }
+
+        /// <summary>(Since 2026-10-18; off only in the development build, to compare.) Maps placed anew in plain loops where nothing coarser can be had: see Step.</summary>
+        internal static bool FastAnew = true;
+        readonly bool[] placedAnew = new bool[Maps];
+        static int[] ringOrder;
+        static readonly ushort HalfUnknown = Cascade.Half(Unknown), HalfFar = Cascade.Half(Far), HalfDeep = Cascade.Half(-Unknown);
+
+        /// <summary>The points of a map in the order Step's rings take them (the camera's own first, then ring by ring outwards), as offsets packed into one number each.</summary>
+        static int[] RingOrder()
+        {
+            if (ringOrder != null) return ringOrder;
+            const int Half = Across / 2;
+            var order = new List<int>(Across * Across);
+            void Add(int i, int j) => order.Add(((j + Half) << 16) | (i + Half));
+            Add(0, 0);
+            for (int ring = 1; ring <= Half; ring++)
+                for (int j = -ring; j <= ring; j++)
+                {
+                    if (j < -Half || j >= Half) continue;
+                    if (j == -ring || j == ring) { for (int i = Math.Max(-ring, -Half); i <= Math.Min(ring, Half - 1); i++) Add(i, j); }
+                    else { if (-ring >= -Half) Add(-ring, j); if (ring < Half) Add(ring, j); }
+                }
+            ringOrder = order.ToArray();
+            return ringOrder;
+        }
+
+        /// <summary>A whole map placed anew at once with nothing coarser to borrow: every point deep water, not yet asked, waiting in rings.</summary>
+        void Anew(int l, long cx, long cz)
+        {
+            const int Half = Across / 2;
+            float[] h = height[l], tm = time[l], sm = smooth[l];
+            bool[] ask = asked[l];
+            for (int n = 0; n < Across * Across; n++)
+            {
+                h[n] = Unknown; ask[n] = false; tm[n] = Far; sm[n] = -Unknown;
+                raw[4 * n + l] = HalfUnknown; rawTime[4 * n + l] = HalfFar; rawSmooth[4 * n + l] = HalfDeep;
+            }
+            Queue<int> q = waiting[l];
+            foreach (int packed in RingOrder())
+            {
+                int i = (packed & 0xFFFF) - Half, j = (packed >> 16) - Half;
+                q.Enqueue(Wrap(cz + j) * Across + Wrap(cx + i));
+            }
+            changed = true; timesChanged = true; smoothChanged = true;
+            unsettled[l] = 8; rough[l] = true;
         }
 
         /// <summary>A place has come into a map's reach: its point waits to be asked, and has meanwhile what the next coarser map has there.</summary>
@@ -226,25 +386,38 @@ namespace NaturalOcean
             waiting[l].Enqueue(n);
         }
 
-        /// <summary>A map's depths taken over `Round` points to every side (first along one axis, then along the other); land counts as no depth.</summary>
-        void Smooth(int l)
+        // (Since 2026-10-18: a smoothing or a sweep is done a quarter a frame. Whole, a sweep of a map took 6.9 ms of every frame for
+        // a quarter of a minute after the camera had moved, and a smoothing up to 11 ms in one; a quarter each is under 2 ms, the
+        // result the same, only reached over four frames. A map placed anew meanwhile begins its smoothing and its sweep again.)
+        int smoothing = -1, smoothPart, sweeping = -1, sweepCorner, sweepRow;
+        bool sweepAny;
+
+        /// <summary>
+        /// A quarter of a map's smoothing: its depths taken over `Round` points to every side, first along one axis (parts 0 and 1,
+        /// each half of the rows), then along the other (parts 2 and 3, each half of the columns); land counts as no depth.
+        /// </summary>
+        void SmoothPart(int l, int part)
         {
             const int Half = Across / 2;
             int round = Round[l];
             float[] h = height[l], into = smooth[l];
             long cx = cellX[l], cz = cellZ[l];
-            for (int oj = -Half; oj < Half; oj++)
+            if (part < 2)
             {
-                int row = Wrap(cz + oj) * Across;
-                for (int oi = -Half; oi < Half; oi++)
+                for (int oj = part == 0 ? -Half : 0; oj < (part == 0 ? 0 : Half); oj++)
                 {
-                    float sum = 0f;
-                    for (int k = -round; k <= round; k++) sum += Mathf.Max(-h[row + Wrap(cx + Mathf.Clamp(oi + k, -Half, Half - 1))], 0f);
-                    line[oi + Half] = sum / (2 * round + 1);
+                    int row = Wrap(cz + oj) * Across;
+                    for (int oi = -Half; oi < Half; oi++)
+                    {
+                        float sum = 0f;
+                        for (int k = -round; k <= round; k++) sum += Mathf.Max(-h[row + Wrap(cx + Mathf.Clamp(oi + k, -Half, Half - 1))], 0f);
+                        line[oi + Half] = sum / (2 * round + 1);
+                    }
+                    for (int oi = -Half; oi < Half; oi++) into[row + Wrap(cx + oi)] = line[oi + Half];
                 }
-                for (int oi = -Half; oi < Half; oi++) into[row + Wrap(cx + oi)] = line[oi + Half];
+                return;
             }
-            for (int oi = -Half; oi < Half; oi++)
+            for (int oi = part == 2 ? -Half : 0; oi < (part == 2 ? 0 : Half); oi++)
             {
                 int col = Wrap(cx + oi);
                 for (int oj = -Half; oj < Half; oj++)
@@ -282,7 +455,7 @@ namespace NaturalOcean
         /// point at the speed the depth there gives). Four sweeps from the four corners carry the times out from every shore;
         /// a map is settled when eight sweeps running have changed nothing.
         /// </summary>
-        void Sweep(int l, int corner)
+        bool SweepRows(int l, int corner, int fromRow, int toRow)
         {
             const int Half = Across / 2;
             float c = Cell[l];
@@ -290,7 +463,7 @@ namespace NaturalOcean
             long cx = cellX[l], cz = cellZ[l];
             bool stepX = (corner & 1) == 0, stepZ = (corner & 2) == 0;
             bool any = false;
-            for (int b = 0; b < Across; b++)
+            for (int b = fromRow; b < toRow; b++)
             {
                 int oj = stepZ ? b - Half : Half - 1 - b;
                 int row = Wrap(cz + oj) * Across, rowDown = oj > -Half ? Wrap(cz + oj - 1) * Across : -1, rowUp = oj < Half - 1 ? Wrap(cz + oj + 1) * Across : -1;
@@ -321,8 +494,8 @@ namespace NaturalOcean
                     if (now < was - 1e-3f || (now == 0f && was != 0f)) { t[n] = now; rawTime[4 * n + l] = Cascade.Half(now); any = true; }
                 }
             }
-            if (any) { unsettled[l] = 8; timesChanged = true; if (l > 0) unsettled[l - 1] = Math.Max(unsettled[l - 1], 4); }
-            else unsettled[l]--;
+            if (any) timesChanged = true;
+            return any;
         }
 
 #if DEV

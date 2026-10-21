@@ -17,10 +17,11 @@ namespace NaturalOcean
         public float SwellPeriod;     // seconds between its crests
         public float SwellTo;         // which way it travels
         public float Gravity;         // m/s2 at the sea's surface
+        public float Air;             // (since 0.3.0) the air's density over the sea against Kerbin's at its sea level: how hard the wind takes hold of the water (0: as Kerbin's)
 
         public bool Near(in SeaState o) =>
             Math.Abs(Wind - o.Wind) < 0.05f && Math.Abs(Angle(WindTo - o.WindTo)) < 0.01f && Math.Abs(Fetch - o.Fetch) < 0.02f * Math.Max(1f, Fetch) && Math.Abs(Depth - o.Depth) < 0.03f * Math.Max(1f, Depth)
-            && Math.Abs(Swell - o.Swell) < 0.01f && Math.Abs(SwellPeriod - o.SwellPeriod) < 0.05f && Math.Abs(Angle(SwellTo - o.SwellTo)) < 0.01f && Math.Abs(Gravity - o.Gravity) < 0.001f;
+            && Math.Abs(Swell - o.Swell) < 0.01f && Math.Abs(SwellPeriod - o.SwellPeriod) < 0.05f && Math.Abs(Angle(SwellTo - o.SwellTo)) < 0.01f && Math.Abs(Gravity - o.Gravity) < 0.001f && Math.Abs(Air - o.Air) < 0.01f;
 
         static float Angle(float a) { while (a > Math.PI) a -= 2f * (float)Math.PI; while (a < -Math.PI) a += 2f * (float)Math.PI; return a; }
     }

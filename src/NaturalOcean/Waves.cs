@@ -29,6 +29,11 @@ namespace NaturalOcean
         public float[] Moved;
         /// <summary>The same, and the slopes, ready for the graphics card (four half floats a point each; the slopes' four: along each axis, the squeeze, and the two slopes' squares added).</summary>
         public readonly ushort[] RawMoved, RawSlope;
+        /// <summary>The smaller pictures of the same, each half as wide as the one before, as the graphics card's mipmaps take them
+        /// (index 1 on; 0 is the whole picture above), averaged here on the waves' own threads. Until 2026-10-18 Unity's Apply
+        /// worked them out on the game's own thread each time new waves came: most of the sea's 0.73 ms a frame there.</summary>
+        public readonly ushort[][] RawMovedMips, RawSlopeMips;
+        readonly float[] slopes, mipA, mipB;      // (the slopes as numbers, for averaging; and two pictures to average between)
         public float Roughness;                  // the mean square slope of this patch's waves, both ways together
         public float Height;                     // four times the root mean square height of this patch's waves
 
@@ -43,6 +48,10 @@ namespace NaturalOcean
             r1 = new float[all]; i1 = new float[all]; r2 = new float[all]; i2 = new float[all]; r3 = new float[all]; i3 = new float[all]; r4 = new float[all]; i4 = new float[all];
             Moved = new float[all * 4];
             RawMoved = new ushort[all * 4]; RawSlope = new ushort[all * 4];
+            int levels = 1; for (int w = n; w > 1; w /= 2) levels++;
+            RawMovedMips = new ushort[levels][]; RawSlopeMips = new ushort[levels][];
+            for (int l = 1, w = n / 2; l < levels; l++, w = Math.Max(1, w / 2)) { RawMovedMips[l] = new ushort[w * w * 4]; RawSlopeMips[l] = new ushort[w * w * 4]; }
+            slopes = new float[all * 4]; mipA = new float[all]; mipB = new float[all];
             fourier = new Fourier(n);
             var inBand = new System.Collections.Generic.List<int>();
             var random = new System.Random(seed);
@@ -168,6 +177,32 @@ namespace NaturalOcean
                 float sx = i2[at] / Mathf.Max(1f + dxx, 0.25f), sz = r3[at] / Mathf.Max(1f + dzz, 0.25f);
                 RawMoved[4 * at] = Half(dx); RawMoved[4 * at + 1] = Half(h); RawMoved[4 * at + 2] = Half(dz); RawMoved[4 * at + 3] = Half(squeeze);
                 RawSlope[4 * at] = Half(sx); RawSlope[4 * at + 1] = Half(sz); RawSlope[4 * at + 2] = Half(squeeze); RawSlope[4 * at + 3] = Half(sx * sx + sz * sz);
+                slopes[4 * at] = sx; slopes[4 * at + 1] = sz; slopes[4 * at + 2] = squeeze; slopes[4 * at + 3] = sx * sx + sz * sz;
+            }
+            Mips(moved, RawMovedMips); Mips(slopes, RawSlopeMips);
+        }
+
+        /// <summary>The mipmaps of one of the two pictures: each point the mean of the four under it, as Unity's own are made.</summary>
+        void Mips(float[] top, ushort[][] into)
+        {
+            int size = N;
+            float[] from = top;
+            for (int level = 1; level < into.Length; level++)
+            {
+                int half = Math.Max(1, size / 2);
+                float[] to = level % 2 == 1 ? mipA : mipB;
+                ushort[] raw = into[level];
+                for (int y = 0; y < half; y++)
+                    for (int x = 0; x < half; x++)
+                    {
+                        int o = 4 * (y * half + x), a = 4 * (2 * y * size + 2 * x), b = a + 4, c = a + 4 * size, d = c + 4;
+                        for (int ch = 0; ch < 4; ch++)
+                        {
+                            float v = 0.25f * (from[a + ch] + from[b + ch] + from[c + ch] + from[d + ch]);
+                            to[o + ch] = v; raw[o + ch] = Half(v);
+                        }
+                    }
+                from = to; size = half;
             }
         }
 
@@ -377,6 +412,10 @@ namespace NaturalOcean
             double scale = Spectrum.Scale(sea), peak = Spectrum.Peak(sea);
             Parallel.For(0, Patches, n => Patch[n].Shape(sea, scale, peak));
             double u = Math.Max(sea.Wind, 0.0), knee = 2.5 * peak;
+            // (The short waves answer to how hard the wind takes hold of the water, its stress, which goes as the air's density
+            // times the wind's speed squared: in Eve's thick air (some five times Kerbin's) a light wind roughens the water as
+            // a fresh one does here; in Laythe's thinner air a little less. Cox and Munk's sea was Earth's air, which Kerbin's is.)
+            u *= Math.Sqrt(sea.Air > 0f ? Math.Min(Math.Max(sea.Air, 0.05), 20.0) : 1.0);
             double wantLarge = (0.008 * Math.Min(1.0, u / 2.0) + 0.00156 * u) / TwinSlopes, wantAll = (0.003 * Math.Min(1.0, u / 2.0) + 0.00512 * u) / TwinSlopes;
             double least = 0.0, most = Math.Log(400.0);
             for (int round = 0; round < 18; round++)
@@ -428,6 +467,18 @@ namespace NaturalOcean
         /// points as the graphics card will read it, sixteen thousand at a time, the counts of earlier times fading (the
         /// shares are thousandths and less: one time's places hold too few to tell).
         /// </summary>
+        /// <summary>The squeeze below which so many of the places counted lie (`want` of them, from the most squeezed); less than -8: not found.</summary>
+        static float LevelFor(float[] c, float want)
+        {
+            float sum = 0f;
+            for (int k = 0; k < Steps; k++)
+            {
+                if (sum + c[k] >= want) return (k + (c[k] > 0f ? (want - sum) / c[k] : 0.5f)) / 128f - 2f;
+                sum += c[k];
+            }
+            return -9f;
+        }
+
         void BreakLevel(float share, in SeaState sea)
         {
             const int Places = 16384;
@@ -465,14 +516,16 @@ namespace NaturalOcean
                 for (int k = 0; k < Steps; k++) total += c[k];
                 for (int which = 0; which < 2; which++)
                 {
-                    float want = share * Shares[n] * total * (which == 0 ? Outright : PlainTimes), sum = 0f, level = -9f;
-                    // (a size whose share is next to nothing does not break: its level would be found from a place or two)
-                    if (Shares[n] > 0.02f && want > 0.5f)
-                        for (int k = 0; k < Steps; k++)
-                        {
-                            if (sum + c[k] >= want) { level = (k + (c[k] > 0f ? (want - sum) / c[k] : 0.5f)) / 128f - 2f; break; }
-                            sum += c[k];
-                        }
+                    float want = share * Shares[n] * total * (which == 0 ? Outright : PlainTimes), level = -9f;
+                    // (A size whose share of the white is next to nothing does not break. Where fewer than two of the places counted
+                    // are wanted, the level is not found from them but carried on from the count's own tail, which falls off
+                    // steadily: the level for two and the level for eight, and on by as much again for each fourth as few. Found
+                    // only where half a place or more was wanted, as at first, no breaker began anywhere in a wind under 15 m/s
+                    // (where a twentieth of the breaking part, which is all that begins, is a few thousandths of a place), and the
+                    // sea had a fifth of its white at 12 m/s and a fiftieth at 8, against what photographs of the sea measure.)
+                    if (Shares[n] > 0.02f && want > 1e-4f)
+                        level = want >= 2f ? LevelFor(c, want) : LevelFor(c, 2f) + (LevelFor(c, 2f) - LevelFor(c, 8f)) * Mathf.Log(2f / want) / Mathf.Log(4f);
+                    if (level < -2f) level = -9f;
                     // (eased: found afresh from other places each time, it would flicker)
                     float[] into = which == 0 ? Levels : Plain;
                     into[n] = into[n] < -8f || level < -8f ? level : Mathf.Lerp(into[n], level, 0.3f);
@@ -497,12 +550,13 @@ namespace NaturalOcean
                     {
                         Moved.SetPixelData(Patch[n].RawMoved, 0, n);
                         Slope.SetPixelData(Patch[n].RawSlope, 0, n);
+                        for (int l = 1; l < Patch[n].RawMovedMips.Length; l++) { Moved.SetPixelData(Patch[n].RawMovedMips[l], l, n); Slope.SetPixelData(Patch[n].RawSlopeMips[l], l, n); }
                         float[] last = before[n]; before[n] = shown[n]; shown[n] = last;
                         Buffer.BlockCopy(Patch[n].Moved, 0, shown[n], 0, shown[n].Length * sizeof(float));
                         high += Patch[n].Height * Patch[n].Height; rough += Patch[n].Roughness;
                     }
                 }
-                Moved.Apply(true, false); Slope.Apply(true, false);
+                Moved.Apply(false, false); Slope.Apply(false, false);       // (the mipmaps made on the waves' threads: Cascade.Mips)
                 HeightNow = Mathf.Sqrt(high); RoughNow = rough * TwinSlopes;
                 lock (swapLock) { beforeTime = nowTime; nowTime = askedTime; }
                 ShownTime = askedTime;

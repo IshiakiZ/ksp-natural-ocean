@@ -26,14 +26,26 @@ namespace NaturalOcean
     /// </summary>
     sealed class Spray : IDisposable
     {
-        readonly GameObject mistHolder, dropHolder;
-        readonly ParticleSystem mist, drops;
-        readonly Material mistMaterial, dropMaterial;
+        readonly GameObject mistHolder, dropHolder, sheetHolder;
+        readonly ParticleSystem mist, drops, sheets;
+        readonly Material mistMaterial, dropMaterial, sheetMaterial;
         readonly Texture2D wisps, dot;
         readonly System.Random random = new System.Random(12345);
         ParticleSystem.EmitParams one;
         /// <summary>Bursts let go in the last second or so, and puffs and drops alive (for the report).</summary>
         public int Bursts, Alive;
+#if DEV
+        /// <summary>(Development build: how long making the spray took, all of it and its wisps' picture, the first time in a scene: the
+        /// next-five round measured its first frame at 407 ms, once, 2026-10-18.)</summary>
+        public static double MadeMs, WispsMs;
+        public static double StepWorstMs; public static string StepWorstGc = ""; public static int StepWorstFrame;
+        public static string Made()
+        {
+            string s = "the spray made in " + MadeMs.ToString("F1") + " ms, of which its wisps' picture " + WispsMs.ToString("F1") + " ms; its worst step " +
+                       StepWorstMs.ToString("F1") + " ms at frame " + StepWorstFrame + " (garbage collections during it: " + StepWorstGc + ")";
+            StepWorstMs = 0; StepWorstGc = ""; return s;
+        }
+#endif
         int burstsNow; float counted;
 
         public Spray()
@@ -84,7 +96,13 @@ namespace NaturalOcean
             mistDrawn.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             mistDrawn.receiveShadows = false;
             mistDrawn.sortMode = ParticleSystemSortMode.Distance;
+#if DEV
+            var wispsWatch = System.Diagnostics.Stopwatch.StartNew();
             wisps = Wisps();
+            WispsMs = wispsWatch.Elapsed.TotalMilliseconds;
+#else
+            wisps = Wisps();
+#endif
             mistMaterial = new Material(s) { name = "Natural Ocean: spray (mist)", mainTexture = wisps };
             if (mistMaterial.HasProperty("_TintColor")) mistMaterial.SetColor("_TintColor", new Color(0.5f, 0.5f, 0.5f, 0.5f));
             // (soft where it meets the water: a wisp cut off in a hard line by a wave is a card)
@@ -132,6 +150,56 @@ namespace NaturalOcean
             dropDrawn.sharedMaterial = dropMaterial;
             drops.Play(false);
             try { FloatingOrigin.RegisterParticleSystem(drops); } catch (Exception) { }
+
+            // ---- the sheets (2026-10-17): the water a big blow throws up is a sheet before it is drops, a crown's tulip of
+            // water tearing into strands at its rim, a jet's column; drawn as drops alone it was a spatter of separate white
+            // specks, a crown of confetti, where footage of a heavy thing striking the sea shows a wall of water rising and
+            // falling. Torn pieces of a sheet, soft and seen through, thrown as the drops are and falling as water falls.
+            sheetHolder = new GameObject("Natural Ocean: spray (sheets)") { layer = 0 };
+            sheets = sheetHolder.AddComponent<ParticleSystem>();
+            sheets.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            main = sheets.main;
+            main.simulationSpace = ParticleSystemSimulationSpace.World;
+            main.maxParticles = 6000;
+            main.playOnAwake = false;
+            main.loop = true;
+            main.gravityModifier = 1f;
+            main.startSpeed = 0f;
+            emission = sheets.emission;
+            emission.enabled = false;
+            shape = sheets.shape;
+            shape.enabled = false;
+            colour = sheets.colorOverLifetime;
+            colour.enabled = true;
+            var tears = new Gradient();
+            tears.SetKeys(new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
+                          new[] { new GradientAlphaKey(0f, 0f), new GradientAlphaKey(1f, 0.04f), new GradientAlphaKey(0.7f, 0.5f), new GradientAlphaKey(0f, 1f) });
+            colour.color = tears;
+            ParticleSystem.SizeOverLifetimeModule spreads = sheets.sizeOverLifetime;
+            spreads.enabled = true;
+            spreads.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(new Keyframe(0f, 0.6f), new Keyframe(0.4f, 1f), new Keyframe(1f, 1.5f)));
+            ParticleSystem.LimitVelocityOverLifetimeModule sheetDrag = sheets.limitVelocityOverLifetime;
+            sheetDrag.enabled = true; sheetDrag.drag = 0.25f; sheetDrag.limit = 80f; sheetDrag.dampen = 0f;
+            ParticleSystem.TextureSheetAnimationModule pieces = sheets.textureSheetAnimation;
+            pieces.enabled = true;
+            pieces.mode = ParticleSystemAnimationMode.Grid;
+            pieces.numTilesX = 2; pieces.numTilesY = 2;
+            pieces.animation = ParticleSystemAnimationType.WholeSheet;
+            pieces.frameOverTime = new ParticleSystem.MinMaxCurve(0f, 0.999f);
+            pieces.cycleCount = 1;
+            var sheetDrawn = sheetHolder.GetComponent<ParticleSystemRenderer>();
+            sheetDrawn.renderMode = ParticleSystemRenderMode.Stretch;
+            sheetDrawn.velocityScale = 0.02f;
+            sheetDrawn.lengthScale = 1.4f;
+            sheetDrawn.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            sheetDrawn.receiveShadows = false;
+            sheetDrawn.sortMode = ParticleSystemSortMode.Distance;
+            sheetMaterial = new Material(s) { name = "Natural Ocean: spray (sheets)", mainTexture = wisps };
+            if (sheetMaterial.HasProperty("_TintColor")) sheetMaterial.SetColor("_TintColor", new Color(0.62f, 0.62f, 0.62f, 0.5f));
+            if (sheetMaterial.HasProperty("_InvFade")) sheetMaterial.SetFloat("_InvFade", 0.8f);
+            sheetDrawn.sharedMaterial = sheetMaterial;
+            sheets.Play(false);
+            try { FloatingOrigin.RegisterParticleSystem(sheets); } catch (Exception) { }
             one = new ParticleSystem.EmitParams();
         }
 
@@ -142,7 +210,24 @@ namespace NaturalOcean
         static Texture2D Wisps()
         {
             const int N = 128;
+            Color32[] px = null;
+            try { if (wispsJob != null) px = wispsJob.Result; } catch (Exception) { px = null; }
+            if (px == null) px = WispsPixels();
             var t = new Texture2D(2 * N, 2 * N, TextureFormat.RGBA32, true) { name = "Natural Ocean: wisps of mist", wrapMode = TextureWrapMode.Clamp };
+            t.SetPixels32(px);
+            t.Apply(true);
+            return t;
+        }
+
+        // (The wisps' picture worked out on a worker as the game starts (Prepare, from OceanAtStart): worked out on the game's thread
+        // as the first scene with sea began, it took 63 ms of that frame (2026-10-20; the first frame's 407 ms of 2026-10-18 was
+        // most likely this too). Only plain arithmetic and System.Random: nothing of Unity's but its Mathf, which is safe there.)
+        static System.Threading.Tasks.Task<Color32[]> wispsJob;
+        public static void Prepare() { if (wispsJob == null) wispsJob = System.Threading.Tasks.Task.Run(() => WispsPixels()); }
+
+        static Color32[] WispsPixels()
+        {
+            const int N = 128;
             var px = new Color32[4 * N * N];
             for (int which = 0; which < 4; which++)
             {
@@ -176,9 +261,7 @@ namespace NaturalOcean
                         px[(oy + y) * 2 * N + ox + x] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(255f * Mathf.Clamp01(a)));
                     }
             }
-            t.SetPixels32(px);
-            t.Apply(true);
-            return t;
+            return px;
         }
 
         /// <summary>A drop: a small soft dot.</summary>
@@ -250,6 +333,71 @@ namespace NaturalOcean
                 }
             }
             thrown.Clear();
+        }
+
+        // ---- a hull going fast through the water (Floating.cs): sheets of spray off its sides (since 0.3.0)
+        // What is seen of a fast hull, a seaplane's floats taking off or a boat at speed, is less its waves than its spray: where
+        // the water meets the hull's forward part it is thrown up and out in a thin sheet along the hull's sides (the "whisker"
+        // spray and the main spray blister of planing hulls, Savitsky's), the faster the more and the higher, which tears into
+        // strands of drops and falls back in a wing to either side and behind, mist trailing off it in the wind. Nothing below a
+        // few metres a second, where a hull only pushes a bow wave.
+        struct Sheeted { public Vector3 Where, Up, Through, Moving; public float Wide, Deep, Seconds; }
+        static readonly System.Collections.Generic.List<Sheeted> sheeted = new System.Collections.Generic.List<Sheeted>();
+
+        /// <summary>A part so wide (m) is going through the water at a place in the scene: `through` its speed through the water, `moving` its own (m/s), for so many seconds since the last time.</summary>
+        public static void HullSpray(Vector3 where, Vector3 up, Vector3 through, Vector3 moving, float wide, float deep, float seconds)
+        {
+            if (sheeted.Count < 64) sheeted.Add(new Sheeted { Where = where, Up = up, Through = through, Moving = moving, Wide = wide, Deep = deep, Seconds = seconds });
+        }
+
+        void HullSprays(Color light)
+        {
+            for (int n = 0; n < sheeted.Count; n++)
+            {
+                Sheeted t = sheeted[n];
+                Vector3 level = t.Through - t.Up * Vector3.Dot(t.Through, t.Up);
+                float U = level.magnitude;
+                if (U < 3.5f) continue;
+                Vector3 along = level / U, across = Vector3.Cross(t.Up, along);
+                // (as much as the water the hull's sides push aside a second, of which a share goes up: so many drops for it; and that
+                // is as the hull is deep in it: a planing hull, or a plane with only its belly in the water, throws a thin sheet. The
+                // sheet's water goes as the speed once the hull planes, not as its square: at fifty metres a second most of what is
+                // thrown is fine, a mist and torn sheet, not a storm of drops)
+                float fast = U - 3.5f;
+                float much = Mathf.Min(fast * Mathf.Min(fast, 8.5f) * 0.6f * Mathf.Max(t.Wide, 0.3f) * Mathf.Clamp01(t.Deep / 0.4f), 300f) * t.Seconds * Much;
+                int count = Mathf.Min((int)much + (Chance() < much - (int)much ? 1 : 0), 40);
+                float tornShare = Mathf.Lerp(0.6f, 0.88f, Mathf.InverseLerp(10f, 40f, U));
+                for (int k = 0; k < count; k++)
+                {
+                    float side = Chance() < 0.5f ? -1f : 1f;
+                    // (thrown out of the water where the hull's forward part meets it, up and out, and carried on some way with it)
+                    one.position = t.Where + across * (side * t.Wide * (0.85f + 0.3f * Chance())) + along * (t.Wide * (0.2f + 0.6f * Chance())) + t.Up * (0.05f + 0.1f * Chance());
+                    // (carried on with the hull a little, out to the side and up: a sheet thrown off its sides, which drags to a stop
+                    // in the air within a second; most of it torn sheet, the rest strands of drops)
+                    one.velocity = t.Moving - t.Through * (0.75f + 0.15f * Chance())
+                                 + across * (side * Mathf.Min(U * (0.2f + 0.25f * Chance()), 14f)) + t.Up * Mathf.Min(U * (0.08f + 0.15f * Chance()), 3f + 5f * Chance());
+                    bool torn = Chance() < tornShare;
+                    one.startSize = (torn ? 0.25f + 0.35f * Chance() : 0.04f + 0.08f * Chance()) * Mathf.Clamp(0.6f + 0.25f * t.Wide, 0.7f, 1.5f);
+                    one.startLifetime = 0.5f + 0.9f * Chance();
+                    one.rotation = torn ? Chance() * 360f : 0f;
+                    one.startColor = new Color(light.r, light.g, light.b, torn ? 0.25f + 0.3f * Chance() : 0.45f + 0.4f * Chance());
+                    if (torn) sheets.Emit(one, 1); else drops.Emit(one, 1);
+                }
+                // (and mist, a little, where the sheets come down: thrown at the hull's speed it hangs behind it)
+                int puffs = Mathf.Min((int)(much / 14f) + (Chance() < (much / 14f) % 1f ? 1 : 0), 10);
+                for (int k = 0; k < puffs; k++)
+                {
+                    float side = Chance() < 0.5f ? -1f : 1f;
+                    one.position = t.Where + across * (side * t.Wide * (1.2f + 0.8f * Chance())) - along * (t.Wide * Chance()) + t.Up * (0.2f + 0.4f * Chance());
+                    one.velocity = t.Moving * 0.15f + across * (side * (0.5f + 1.5f * Chance())) + t.Up * (0.3f + 0.7f * Chance());
+                    one.startSize = (0.6f + 0.9f * Chance()) * Mathf.Clamp(0.6f + 0.3f * t.Wide, 0.7f, 1.8f);
+                    one.startLifetime = 1.2f + 1.8f * Chance();
+                    one.rotation = Chance() * 360f;
+                    one.startColor = new Color(light.r, light.g, light.b, 0.07f + 0.07f * Chance());
+                    mist.Emit(one, 1);
+                }
+            }
+            sheeted.Clear();
         }
 
         // ---- a craft crashing into the sea: a splash as big as the blow
@@ -380,7 +528,63 @@ namespace NaturalOcean
                         one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, 0.2f + 0.35f * Chance());
                         drops.Emit(one, 1);
                     }
+                    // (and the sheet the crown is before it tears: fewer, larger, softer pieces thrown together, rising as one
+                    // wall, its top uneven, falling back as water falls)
+                    int pieces = Mathf.Clamp((int)(60f + 6.5f * R * R * Mathf.Sqrt(longer)), 60, 1600);
+                    for (int k = 0; k < pieces; k++)
+                    {
+                        float turn = Chance() * 6.2832f;
+                        Vector3 way = a * Mathf.Cos(turn) + c * Mathf.Sin(turn);
+                        float forward = Vector3.Dot(way, ahead);
+                        if (Chance() > (1f + 0.8f * lying * forward) / (1f + 0.8f * lying)) continue;
+                        float steep = (55f + 20f * Chance() - 25f * lying * Mathf.Max(forward, 0f)) * Mathf.Deg2Rad;
+                        float rise = Mathf.Sqrt(2f * g * crown) * (0.5f + 0.5f * Chance());
+                        float speed = rise / Mathf.Sin(steep);
+                        Vector3 rimAt = way * (R * (0.8f + 0.25f * Chance())) + ahead * (forward * (longer - 1f) * R + 0.35f * R * lying);
+                        one.position = at + rimAt + up * (0.3f * Chance() * scale);
+                        one.velocity = up * rise + way * (speed * Mathf.Cos(steep) * (0.8f + 0.4f * Chance())) + ahead * (speed * 0.35f * lying) + windWay * 0.15f;
+                        one.startSize = (0.5f + 0.6f * Chance()) * Mathf.Max(0.18f * R, 0.4f);
+                        one.startLifetime = 2f * rise / g + 0.3f;
+                        one.rotation = Chance() * 360f;
+                        float lit = 0.75f + 0.25f * Chance();
+                        // (thickest where it leaves the water, a wall of it, tearing open higher up: the slower pieces, which stay
+                        // low, the more solid)
+                        float low_ = 1f - rise / Mathf.Sqrt(2f * g * crown);
+                        one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.16f + 0.22f * Chance()) * (0.7f + 0.6f * low_));
+                        sheets.Emit(one, 1);
+                    }
                     Puffs(at, up, a, c, R, R * 1.1f, crown * 0.6f, Mathf.Clamp((int)(50f + 5f * R), 50, 260), light, windWay);
+                    // (The plume (2026-10-17). The crater's size goes by the blow's energy, but what a fast blow throws first is thrown
+                    // at a share of its own speed, from right where it strikes: the spray that stands in footage of a heavy thing
+                    // striking the sea fast as a tall white plume, over the crown, gone to mist in seconds. Up to twenty-two
+                    // hundredths of the speed it struck at (the drops slowed by the air), within fifteen degrees of back the way it
+                    // came; nothing from a slow blow, which only crowns. Twenty-two hundredths: the first spray is thrown faster
+                    // than the struck thing came in, but most of it is fine and the air stops it within metres.)
+                    float struck = ((Vector3)b.Velocity).magnitude;
+                    float plumeSpeed = Mathf.Min(0.22f * struck, 110f);
+                    if (plumeSpeed > Mathf.Sqrt(2f * g * crown))
+                    {
+                        Vector3 back = goingWay.sqrMagnitude > 1f ? -goingWay.normalized : up;
+                        back = (back + up).normalized;
+                        int plume = Mathf.Clamp((int)(40f + 2.5f * R * R), 40, 900);
+                        for (int k = 0; k < plume; k++)
+                        {
+                            float turn = Chance() * 6.2832f, off = 15f * Mathf.Deg2Rad * Mathf.Sqrt(Chance());
+                            Vector3 side = Vector3.Cross(back, a).normalized;
+                            Vector3 way = (back * Mathf.Cos(off) + (side * Mathf.Cos(turn) + Vector3.Cross(back, side) * Mathf.Sin(turn)) * Mathf.Sin(off)).normalized;
+                            float v = plumeSpeed * (0.35f + 0.65f * Chance() * Chance());
+                            one.position = at + up * (0.5f * Chance() * scale) + way * (0.3f * R * Chance());
+                            one.velocity = way * v + windWay * 0.3f;
+                            one.startSize = (0.5f + 0.7f * Chance()) * Mathf.Max(0.16f * R, 0.4f);
+                            one.startLifetime = 2f * v * Mathf.Max(Vector3.Dot(way, up), 0.2f) / g + 0.6f;
+                            one.rotation = Chance() * 360f;
+                            float lit = 0.8f + 0.2f * Chance();
+                            one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, 0.12f + 0.16f * Chance());
+                            sheets.Emit(one, 1);
+                        }
+                        // (and its mist, high: what is left in the air of the plume's spray)
+                        Puffs(at, up, a, c, R, R * 0.6f, Mathf.Min(plumeSpeed * plumeSpeed / (2f * g), 400f) * 0.7f, Mathf.Clamp((int)(30f + 3f * R), 30, 200), light, windWay);
+                    }
                 }
                 if (b.Crowned && !b.Jetted && now - b.At >= closes)
                 {
@@ -428,6 +632,14 @@ namespace NaturalOcean
                         float lit = (0.72f + 0.28f * Chance()) * (1f - 0.25f * slow);
                         one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.16f + 0.3f * Chance()) * (1f - 0.4f * out_) * (1f - 0.45f * slow));
                         drops.Emit(one, 1);
+                        // (and every fifth, a torn piece of the column itself: soft, larger, seen through)
+                        if (k % 5 == 0)
+                        {
+                            one.startSize = (0.5f + 0.5f * Chance()) * Mathf.Max(0.14f * R, 0.35f);
+                            one.rotation = Chance() * 360f;
+                            one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.08f + 0.12f * Chance()) * (1f - 0.4f * out_));
+                            sheets.Emit(one, 1);
+                        }
                     }
                     b.JetSent = upTo;
                 }
@@ -590,9 +802,10 @@ namespace NaturalOcean
         /// </summary>
         public void Step(Foam foam, Waves waves, Vector2d at, Vector3d mid, Vector3d first, Vector3d second, Vector3d up, float wind, float windTo, float high, Color light, float seconds)
         {
-            Alive = mist.particleCount + drops.particleCount;
+            Alive = mist.particleCount + drops.particleCount + sheets.particleCount;
             LastLight = light;
             if (thrown.Count > 0 && Much > 0f) Splashes(light); else thrown.Clear();
+            if (sheeted.Count > 0 && Much > 0f) HullSprays(light); else sheeted.Clear();
             if (impacts.Count > 0) Impacts(light, wind, windTo, first, second);
             counted += seconds;
             if (counted > 1f) { Bursts = burstsNow; burstsNow = 0; counted = 0f; }
@@ -681,10 +894,13 @@ namespace NaturalOcean
         {
             try { FloatingOrigin.UnregisterParticleSystem(mist); } catch (Exception) { }
             try { FloatingOrigin.UnregisterParticleSystem(drops); } catch (Exception) { }
+            try { FloatingOrigin.UnregisterParticleSystem(sheets); } catch (Exception) { }
             if (mistHolder != null) UnityEngine.Object.Destroy(mistHolder);
             if (dropHolder != null) UnityEngine.Object.Destroy(dropHolder);
+            if (sheetHolder != null) UnityEngine.Object.Destroy(sheetHolder);
             if (mistMaterial != null) UnityEngine.Object.Destroy(mistMaterial);
             if (dropMaterial != null) UnityEngine.Object.Destroy(dropMaterial);
+            if (sheetMaterial != null) UnityEngine.Object.Destroy(sheetMaterial);
             if (wisps != null) UnityEngine.Object.Destroy(wisps);
             if (dot != null) UnityEngine.Object.Destroy(dot);
         }

@@ -188,6 +188,16 @@ namespace NaturalOcean
                             wide *= Mathf.Clamp(1.5f + through.magnitude / 4f, 1.5f, 4f);
                         }
                         if (churned > 0.02f) Foam.Mark(place, wide * 1.15f, churned);
+                        // (and spray off its sides, going fast enough: Spray.HullSpray; only where it sits in the water, not wholly under it)
+                        if (atLine > 0.1f && through.magnitude > 3.5f)
+                        {
+                            Vector3d here2 = (Vector3d)p.transform.TransformPoint(p.CenterOfBuoyancy);
+                            Vector3 upHere3 = (Vector3)FlightGlobals.getUpAxis(body, here2);
+                            Vector3 moving2 = mine != null ? mine.velocity + (Vector3)Krakensbane.GetFrameVelocity() : Vector3.zero;
+                            // (how deep it sits: its share under water times its own height, about twice its "width" here)
+                            float deep = (float)p.submergedPortion * 2f * wide;
+                            Spray.HullSpray((Vector3)here2 + upHere3 * (level - (float)body.GetAltitude(here2)), upHere3, through, moving2, wide, deep, Time.fixedDeltaTime);
+                        }
                     }
                     if (b.splashed) wet[id] = now;
                     else if (wet.TryGetValue(id, out double when) && now - when < Lately)
