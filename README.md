@@ -12,6 +12,8 @@ camera that can go half under.
 
 ![The surf on the coast east of the space centre](src/NaturalOcean/img/natural-ocean-surf.gif)
 
+![A storm's sea from a boat's deck height, 26 m/s: crests curling over, white water streaming down the wind (0.3.0)](src/NaturalOcean/img/natural-ocean-storm.gif)
+
 For Kerbal Space Program 1.12.x. **Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone) 0.9 or later**, a separate download
 ([on SpaceDock](https://spacedock.info/mod/4665/Keystone)): this mod does not load without it. With
 [Natural Weather](https://github.com/IshiakiZ/ksp-natural-weather), which is not needed, the sea goes by the weather's wind and shows its
