@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using UnityEngine;
 
 namespace NaturalOcean
@@ -60,7 +61,16 @@ namespace NaturalOcean
         static Vector2d expectedAt;
         static double expectedWhen;
 
-        public Dents() { instance = this; }
+        public Dents()
+        {
+            instance = this;
+            job = _ =>
+            {
+                try { Work(workSince); ready = true; }
+                catch (Exception ex) { failed = true; Debug.LogError("[Natural Ocean] a dent's picture could not be worked out off the game's thread (it is worked out on it from now on): " + ex); }
+                finally { busy = false; }
+            };
+        }
 
         public Texture Picture => picture;
 
@@ -72,8 +82,17 @@ namespace NaturalOcean
         public static void Struck(CelestialBody body, Vector2d place, float R, Vector2 along, float slant, float length)
         {
             if (instance == null || body == null) return;
+            // (None for a blow too far off for its rings to be seen: they stand a few metres at the most, under a pixel from some
+            // kilometres off, and a dent costs the game's thread two transforms of 128 x 128 every frame of its fifty seconds, 25 ms
+            // a frame on the Mac (2026-10-24). The explosions' warm-up crash, set off out of sight 20 km and more off at every
+            // flight's start, struck the sea out there, and so cost the first minute of every flight.)
+            Camera cam = FlightCamera.fetch != null ? FlightCamera.fetch.mainCamera : null;
+            if (cam != null && Sea.SpotOf((Vector3d)cam.transform.position, out Vector2d eye) && (place - eye).magnitude > Seen) return;
             instance.Make(body, place, R, along, slant, length);
         }
+
+        /// <summary>How far from the camera a blow can still dent the water, m.</summary>
+        const double Seen = 5000.0;
 
         void Make(CelestialBody body, Vector2d place, float R, Vector2 along, float slant, float length)
         {
@@ -81,6 +100,9 @@ namespace NaturalOcean
             // (The parts of one craft often strike in two or three bunches a fraction of a second apart, a little way from one
             // another: a later, smaller bunch goes into the crater the first one dug, and must not wipe it out.)
             if (live && body.bodyName == onBody && Planetarium.GetUniversalTime() - struckAt < 2.0 && (place - middle).magnitude < 3.0 * crater && R <= crater) return;
+            // (the picture in work reads what is set from here on: waited out, and nothing of the blow before shown as this one's)
+            Idle();
+            ready = false; shown = false;
             g = (float)(body.GeeASL * 9.80665);
             onBody = body.bodyName;
             middle = place;
@@ -200,6 +222,84 @@ namespace NaturalOcean
             if (picture == null) picture = new Texture2D(N, N, TextureFormat.RGBAHalf, false, true) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear, name = "Natural Ocean: a blow's dent" };
             if (movesPicture == null) movesPicture = new Texture2D(N, N, TextureFormat.RGBAHalf, false, true) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear, name = "Natural Ocean: a blow's dent, sideways" };
 
+            // (Worked out off the game's thread since 2026-11-10, and shown when it is ready, a frame or two late: see Work.
+            // Dents.OnThread (the development build's Sea.DentOnThread): on the game's thread every frame, as until then.)
+            if (OnThread || failed)
+            {
+                Idle();
+                Work(since);
+                ready = false;
+                Show(since);
+            }
+            else
+            {
+                if (ready) { Show(workSince); ready = false; }
+                if (!busy) { busy = true; workSince = since; ThreadPool.QueueUserWorkItem(job); }
+            }
+            if (!shown)
+            {
+                // (a blow's first frame or two, before its first picture is ready: the crater has hardly begun to open)
+                sea.SetVector("_OceanDentAt", Vector4.zero);
+                if (foam != null) foam.SetVector("_OceanDentAt", Vector4.zero);
+                return;
+            }
+            since = shownSince;
+            float cell = side / N;
+            Vector2d from = middle - at;
+            var dentAt = new Vector4((float)from.x, (float)from.y, 1f / side, 1f);
+            // (the crater's middle, where it was deepest, and the way the craft came: the rings run out from there)
+            Vector2d mid = from + new Vector2d(way.x, way.y) * shift;
+            // (the leading ring breaks hardest at about twice the time to the jet, and has come down by about three times it:
+            // from then on what breaks spills, with no lip thrown far)
+            var curl = new Vector4(Lip, cell, Mathf.SmoothStep(0f, 1f, (since - 2.0f * jetAt) / (0.8f * jetAt)), 1f / longer);
+            sea.SetTexture("_OceanDent", picture);
+            sea.SetTexture("_OceanDentMove", movesPicture);
+            sea.SetVector("_OceanDentAt", dentAt);
+            sea.SetVector("_OceanDentMid", new Vector4((float)mid.x, (float)mid.y, way.x, way.y));
+            sea.SetVector("_OceanDentCurl", curl);
+            if (foam != null)
+            {
+                foam.SetTexture("_OceanDentMove", movesPicture);
+                foam.SetVector("_OceanDentAt", dentAt);
+            }
+        }
+
+        // The dent's picture is worked out on a thread of the pool, one picture at a time, and put in by the game's thread when it
+        // is ready (2026-11-10). It is arithmetic alone (two transforms of 128 x 128 and five passes over the grid's 16,384
+        // cells), and on the game's thread it cost every frame of a dent's fifty seconds some 21 ms on the Windows PC (the sea
+        // 15.9 ms a frame at rest, 37.0 for the minute after a rocket fell into it from 60 m, 15.8 again after: every
+        // splash-down at under half its frames) and 25 on the Mac (2026-10-24). A picture is shown a frame or two after the
+        // moment it is of, and at 60 frames a second every other frame has a new one: the rings run a few metres a second
+        // over cells a metre and more across, and nothing of that is seen.
+        /// <summary>(For trying: the picture worked out on the game's thread every frame, as until 2026-11-10.)</summary>
+        public static bool OnThread;
+        volatile bool busy, ready;       // (a picture being worked out; one waiting to be put in)
+        bool shown, failed;              // (a picture of this blow is in the textures; the worker threw once: on the game's thread from then on)
+        float workSince, shownSince;     // (the moments, seconds since the blow, of the picture in work and of the one shown)
+        readonly WaitCallback job;
+
+        /// <summary>The picture just worked out, into the two textures (the game's thread).</summary>
+        void Show(float of)
+        {
+            picture.SetPixels(cells);
+            picture.Apply(false);
+            movesPicture.SetPixels(moves);
+            movesPicture.Apply(false);
+            shownSince = of;
+            shown = true;
+        }
+
+        /// <summary>Waits out a picture being worked out (some 20 ms at the most), so that what it reads can be changed.</summary>
+        void Idle()
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (busy && clock.ElapsedMilliseconds < 500) Thread.Yield();
+        }
+
+        /// <summary>The dent's heights, moves, slopes and steepness `since` seconds after its blow, into `cells` and `moves`. Arithmetic
+        /// alone: nothing of Unity's but its vectors and its sums, so that it can be done on any thread.</summary>
+        void Work(float since)
+        {
             // the crater opening, then every wave carried on at its own speed from the crater at rest. Two transforms: the
             // height with the move along the first axis (h + i x: H (1 - kx/k)), and the move along the second (i y: -H ky/k).
             float tau = since - opens;
@@ -293,27 +393,6 @@ namespace NaturalOcean
                     float sx = (yy * hx[k] - yx * hy[k]) / J, sy = (-xy * hx[k] + xx * hy[k]) / J;
                     cells[k] = new Color(re[k], sx, sy, steepness[k]);
                 }
-            picture.SetPixels(cells);
-            picture.Apply(false);
-            movesPicture.SetPixels(moves);
-            movesPicture.Apply(false);
-            Vector2d from = middle - at;
-            var dentAt = new Vector4((float)from.x, (float)from.y, 1f / side, 1f);
-            // (the crater's middle, where it was deepest, and the way the craft came: the rings run out from there)
-            Vector2d mid = from + new Vector2d(way.x, way.y) * shift;
-            // (the leading ring breaks hardest at about twice the time to the jet, and has come down by about three times it:
-            // from then on what breaks spills, with no lip thrown far)
-            var curl = new Vector4(Lip, cell, Mathf.SmoothStep(0f, 1f, (since - 2.0f * jetAt) / (0.8f * jetAt)), 1f / longer);
-            sea.SetTexture("_OceanDent", picture);
-            sea.SetTexture("_OceanDentMove", movesPicture);
-            sea.SetVector("_OceanDentAt", dentAt);
-            sea.SetVector("_OceanDentMid", new Vector4((float)mid.x, (float)mid.y, way.x, way.y));
-            sea.SetVector("_OceanDentCurl", curl);
-            if (foam != null)
-            {
-                foam.SetTexture("_OceanDentMove", movesPicture);
-                foam.SetVector("_OceanDentAt", dentAt);
-            }
         }
 
         /// <summary>

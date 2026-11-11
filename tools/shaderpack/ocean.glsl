@@ -975,6 +975,25 @@ vec2 rainRings(vec2 at, float cell, float clock, float rate)
     return slope;
 }
 
+// A map read as a smooth curve through its sixteen nearest points (a cubic B-spline) by four of the card's own blended
+// reads (Sigg and Hadwiger, GPU Gems 2, chapter 20): `size` points across, at its finest. Where the card's blend of the four
+// nearest leaves straight runs between the points, this is round; it smooths a little (a lone point of 1 among noughts
+// comes out 0.44).
+vec4 smoothRead(sampler2D map, vec2 uv, float size)
+{
+    vec2 p = uv * size - 0.5;
+    vec2 i = floor(p), f = p - i;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    vec2 w3 = f3 / 6.0;
+    vec2 g0 = w0 + w1, g1 = w2 + w3;
+    vec2 a = (i - 0.5 + w1 / g0) / size, b = (i + 1.5 + w3 / g1) / size;
+    return g0.y * (g0.x * textureLod(map, a, 0.0) + g1.x * textureLod(map, vec2(b.x, a.y), 0.0))
+         + g1.y * (g0.x * textureLod(map, vec2(a.x, b.y), 0.0) + g1.x * textureLod(map, b, 0.0));
+}
+
 // How much weather lies along so many metres of a line that climbs mu a metre, where the weather thins out by e every
 // "soft" metres of height, counted in metres of it as thick as it is at the line's start (as in veil.glsl).
 float veilThinning(float len, float mu, float soft)
@@ -1433,7 +1452,14 @@ void main()
     {
         float span = _FoamReach.y * _FoamTexel[l];
         float inside = 1.0 - smoothstep(0.34, 0.42, out_ / span);
-        for (int once = inside > 0.0 ? 0 : 1; once < 1; once++)
+        // (Where the next finer map reaches all the way here, it takes this one's place whole (each map's white, depth of bubbles
+        // and spacing are mixed in by how far inside its reach a pixel is, the finest last): this one is not read at all. Each
+        // pixel read every map that reached it, the coarsest first, and threw the coarser reads away; with the coarse maps read
+        // smooth (below) that cost some 1.3 ms a frame over a sea seen straight down from 800 m, 2026-11-10, from the Windows PC.
+        // The same picture, but for rounding. The development build's test 79 reads them all, as before, to time it.)
+        float finer = l > 0 ? 1.0 - smoothstep(0.34, 0.42, out_ / (_FoamReach.y * _FoamTexel[max(l - 1, 0)])) : 0.0;
+        finer *= step(0.5, abs(_OceanShore.y - 69.0));
+        for (int once = inside > 0.0 && finer < 1.0 ? 0 : 1; once < 1; once++)
         {
             vec2 at = l == 0 ? _FoamAtA.xy : l == 1 ? _FoamAtA.zw : l == 2 ? _FoamAtB.xy : _FoamAtB.zw;
             vec2 uv = at + spot / span;
@@ -1443,9 +1469,20 @@ void main()
             // (Fresh froth is not a sheet with a clean edge, "a floe of snow" from a mast: it is torn at its edge into tongues and
             // fingers a metre or two long, with holes, as the breaker throws it and the water under it boils. So where a patch is
             // fresh, its map is read pulled about by a pattern of a metre or so as well, by up to three of its points.)
-            // (the development build's test 61 leaves this out, to compare)
-            float fresh = smoothstep(0.35, 0.75, wide) * step(0.5, abs(_OceanShore.y - 61.0));
-            float here = textureGrad(_OceanFoamMap, uv + (shake * 0.9 + tear * 2.2 * fresh) * (coarse / _FoamReach.y), dx / span, dy / span)[l];
+            // (the development build's test 61 leaves this out, to compare: _OceanShore.y is the test less ten. Until 2026-11-10 this
+            // was weighed against 61, test 71, and test 61 left nothing out.)
+            float fresh = smoothstep(0.35, 0.75, wide) * step(0.5, abs(_OceanShore.y - 51.0));
+            vec2 torn = uv + (shake * 0.9 + tear * 2.2 * fresh) * (coarse / _FoamReach.y);
+            float here = textureGrad(_OceanFoamMap, torn, dx / span, dy / span)[l];
+            // (The coarser maps read smooth where they are drawn enlarged (2026-11-10, from the Windows PC). Read by the card's
+            // own blend of the four nearest points, the white's outline ran straight along the map's rows and columns between
+            // them: from a plane 800 m up, clusters of white blocks with stepped edges, 8 to 32 m to a step, where the finest map
+            // beside them has its patches' edges round. Read as a smooth curve through the sixteen nearest (smoothRead), the
+            // white stays where it was and its outline is round and torn as the finest map's. The development build's test 76
+            // reads them as before, to compare.)
+            float smoothly = coarse * step(0.5, float(l)) * step(0.5, abs(_OceanShore.y - 66.0));
+            for (int once2 = smoothly > 0.001 ? 0 : 1; once2 < 1; once2++)
+                here = mix(here, smoothRead(_OceanFoamMap, torn, _FoamReach.y)[l], smoothly);
             here = mix(here, smoothstep(0.06, 0.3, here) * max(here, 0.5), coarse * step(0.5, float(l)));
             white = mix(white, here, inside);
             mapCoarse = mix(mapCoarse, smoothstep(12.0, 28.0, _FoamTexel[l]), inside);

@@ -88,7 +88,9 @@ namespace NaturalOcean
         {
             if (leftFlat) return;
             leftFlat = true;
-            if (FlightGlobals.VesselsLoaded == null) return;
+            // (as the game closes, the game's FlightGlobals goes before this does, and its VesselsLoaded then throws rather than
+            // giving null: seen on Windows, 2026-11-10, the one exception of ours in a long day's log)
+            if (FlightGlobals.fetch == null || FlightGlobals.VesselsLoaded == null) return;
             foreach (Vessel v in FlightGlobals.VesselsLoaded)
             {
                 if (v == null || v.parts == null) continue;
@@ -98,7 +100,7 @@ namespace NaturalOcean
 
         void Step()
         {
-            if (Ocean.Float == null || !Ocean.Float || Ocean.On == null || !Ocean.On || !Sea.Drawn || !FlightGlobals.ready) { Flat(); Lifted = 0; return; }
+            if (Ocean.Float == null || !Ocean.Float || Ocean.On == null || !Ocean.On || !Sea.Drawn || !Ocean.FlightReady) { Flat(); Lifted = 0; return; }
             CelestialBody body = FlightGlobals.currentMainBody;
             if (body == null || !body.ocean) { Flat(); Lifted = 0; return; }
             double now = Planetarium.GetUniversalTime();

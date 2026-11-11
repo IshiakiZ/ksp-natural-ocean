@@ -8,7 +8,7 @@ using UnityEngine.Rendering;
 
 #if !DEV
 [assembly: KSPAssembly("NaturalOcean", 0, 1)]
-[assembly: KSPAssemblyDependency("Keystone", 0, 7)]
+[assembly: KSPAssemblyDependency("Keystone", 0, 11)]
 #endif
 
 namespace NaturalOcean
@@ -26,12 +26,92 @@ namespace NaturalOcean
     /// basically everything that makes it realistic; seaweed". What real seas do, and how they are drawn, is in
     /// wiki/ksp-natural-ocean/Research.md; what is made so far and what is not, in its Plan.md.
     /// </summary>
+#if DEV
+    /// <summary>(Development build: what some of the sea's work costs, by name: calls and milliseconds since last asked. For the
+    /// 2026-10-24 find: a blow on the sea 25 km off cost the frame some 12 ms for 50 s, the dent's two transforms 25 ms of the
+    /// game's thread, Dents.Step.)</summary>
+    public static class SeaCosts
+    {
+        static readonly Dictionary<string, double> ms = new Dictionary<string, double>();
+        static readonly Dictionary<string, int> calls = new Dictionary<string, int>();
+        static readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        static int frameWas = -1;
+        internal static double Now => clock.Elapsed.TotalMilliseconds;
+        internal static void Add(string name, double from)
+        {
+            ms.TryGetValue(name, out double m); ms[name] = m + (Now - from);
+            calls.TryGetValue(name, out int c); calls[name] = c + 1;
+        }
+        public static string Report()
+        {
+            int frames = Math.Max(1, Time.frameCount - frameWas);
+            var b = new System.Text.StringBuilder("over " + frames + " frames, a frame:");
+            foreach (KeyValuePair<string, double> kv in ms)
+                b.Append(" | ").Append(kv.Key).Append(' ').Append((kv.Value / frames).ToString("F2")).Append(" ms in ").Append(((double)calls[kv.Key] / frames).ToString("F1")).Append(" calls");
+            ms.Clear(); calls.Clear(); frameWas = Time.frameCount;
+            return b.ToString();
+        }
+    }
+#endif
+
     static class Ocean
     {
-        public const string Version = "0.3.0";
+        public const string Version = "0.4.0";
         public static Mod Page;
         public static Toggle On, Others, Float, Weeds;
         public static Slider Rough, Clear;
+        // (the fine details, on the page in Keystone's Advanced view: each sets one of the numbers the sea goes by, and as installed
+        // is that number as it was)
+        public static Slider Whitecaps, FoamClears, FoamRows, CrestCurl, CrestLip, SprayMuch, LightUnder, LensClimb;
+
+        /// <summary>The settings added after Fine(true) are fine details: on the page only in Keystone's Advanced view, until Fine(false).
+        /// (Keystone 0.11.0 has the two views; an older one has neither call, and shows the fine details with the rest.)</summary>
+        static void Fine(bool fine) { try { if (fine) Advanced(Page); else Simple(Page); } catch (Exception) { } }
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void Advanced(Mod page) => page.Advanced();
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void Simple(Mod page) => page.Simple();
+
+        static float whiteWas = 1f, clearsWas = 1f, rowsWas = 1f, curlWas = 1f, lipWas = 0.33f, sprayWas = 1f, raysWas = 1f, climbsWas = 2.2f;
+        static Waves whiteTo;
+
+        /// <summary>(Each frame of the sea.) The fine details given to the numbers they set, each only when it is changed: as installed
+        /// nothing is touched, and the development build's Tune still sets them. The white water is each flight's own waves'.</summary>
+        public static void Give(Waves waves)
+        {
+            if (Whitecaps == null) return;
+            float white = (float)Whitecaps;
+            if (waves != null && (white != whiteWas || (waves != whiteTo && white != 1f))) { waves.White = white; whiteWas = white; whiteTo = waves; }
+            Set(FoamClears, ref clearsWas, ref Foam.Lasts);
+            Set(FoamRows, ref rowsWas, ref Foam.Rows);
+            Set(CrestCurl, ref curlWas, ref Sea.Curl);
+            Set(CrestLip, ref lipWas, ref Sea.Lip);
+            Set(SprayMuch, ref sprayWas, ref Spray.Much);
+            Set(LightUnder, ref raysWas, ref Sea.Rays);
+            float climbs = (float)LensClimb;
+            if (climbs != climbsWas) { Sea.Climbs = climbs / 1000f; climbsWas = climbs; }
+        }
+
+        static void Set(Slider slider, ref float was, ref float number)
+        {
+            float v = (float)slider;
+            if (v != was) { number = v; was = v; }
+        }
+
+        /// <summary>
+        /// Whether there is a flight on the sea: the game's FlightGlobals.ready, and also the frame or so it has that false while it
+        /// gives the controls to another craft near by (a switch, a docking), the new craft already in place. Taken at its word,
+        /// every switch laid the sea flat under whatever floats for a frame (Floating), a jolt to a boat on the waves (found with
+        /// the other mods' flash at a switch, 2026-10-25).
+        /// </summary>
+        public static bool FlightReady
+        {
+            get
+            {
+                if (FlightGlobals.ready) { readyFrame = Time.frameCount; return true; }
+                Vessel v = FlightGlobals.ActiveVessel;
+                return HighLogic.LoadedSceneIsFlight && Time.frameCount - readyFrame <= 5 && v != null && v.loaded && v.mainBody != null;
+            }
+        }
+        static int readyFrame = -100;
 
         public static void Setup()
         {
@@ -39,7 +119,19 @@ namespace NaturalOcean
             Page = Kit.Register("Natural Ocean", Version, "A sea of its own: waves raised by the wind the weather has, swell from elsewhere, foam where they break.");
             On = Page.Toggle("on", "Natural Ocean", true, "Off: the sea as the game (or another mod) draws it.");
             Rough = Page.Slider("rough", "How rough", 1f, 0f, 2f, "x", 2, "The wind the sea is given, against the wind the weather has: 1 as it is; 0 a flat calm; 2 twice the wind (waves four times as high).");
+            Fine(true);
+            Whitecaps = Page.Slider("white", "How much of it breaks white", 1f, 0f, 3f, "x", 2, "How much of the sea is white with breaking water at a moment, against what the wind makes it: 1 as measured at sea; 0, none.");
+            FoamClears = Page.Slider("foamclears", "How fast the foam clears in a gale", 1f, 0.25f, 3f, "x", 2, "How fast the last thin foam goes in a whole gale, against light airs. Less leaves more of a storm's sea pale: at 0.25 half to three quarters of it, where real seas (and 1) have about a tenth white at most.");
+            FoamRows = Page.Slider("foamrows", "Foam drawn into rows", 1f, 0f, 2f, "x", 2, "How strongly the wind's rolls gather the foam into rows down the wind, in a strong wind: 0, none.");
+            CrestCurl = Page.Slider("curl", "How far breaking crests go over", 1f, 0f, 1.5f, "x", 2, "How far a breaking crest curls over: 0, not at all.");
+            CrestLip = Page.Slider("lip", "How big a breaking crest's lip is", 0.33f, 0.1f, 0.66f, "", 2, "How large the lip a breaking crest throws is, against how high that size of wave runs (the mean of its highest third).");
+            SprayMuch = Page.Slider("spray", "How much spray", 1f, 0f, 3f, "x", 2, "Spray blown off the crests in a wind, and thrown off a hull going fast through the water: 1 as the wind and the speed have it; 0, none (and no splashes where things strike the water either).");
+            Fine(false);
             Clear = Page.Slider("clear", "How clear the water is", 1f, 0.3f, 3f, "x", 2, "How far down the bottom can be seen: 1 clear coastal water, about twelve metres.");
+            Fine(true);
+            LightUnder = Page.Slider("rays", "Sunlight under the water", 1f, 0f, 2f, "x", 2, "With the camera under water, how much of the sun's light gathered by the waves shows: the lines of light on what is under water, and the shafts. 0, none.");
+            LensClimb = Page.Slider("climbs", "How far the water climbs the camera's glass", 2.2f, 0.5f, 8f, " mm", 1, "With the camera half in the water, how far up its glass the water climbs at its edge: the dark thread along the line, two or three millimetres on a wet wall.");
+            Fine(false);
             Float = Page.Toggle("float", "Craft ride the waves", true, "What floats is lifted and dropped by the waves that are drawn, and kerbals swim on them. Off: everything floats on a flat sea at the level the game knows, and the waves pass through it.");
             Weeds = Page.Toggle("weed", "Seaweed", true, "Grass and weed on the bottom where the water is one to eleven metres deep: plants near the camera, dark beds from afar.");
             Others = Page.Toggle("others", "Put other seas out of sight", true, "Where this sea is drawn, the game's own sea is not, and Scatterer's is drawn with nothing of it showing (Scatterer's settings are not touched; it goes on working its sea out, which costs a little: switching its sea off in Scatterer's own settings saves that).");
@@ -107,15 +199,20 @@ namespace NaturalOcean
         // (development build: a sea held for a test)
         static float heldWind = -1f, heldSwell = -1f, heldTo = float.NaN, heldCross = float.NaN;
         static string lightSaid = "";
-        /// <summary>(Development build, for finding a fault: 1 leaves out the copy of the picture before the sea (the far camera's, where its picture is kept for the near camera's sea, stays: see FarDepth); 2 leaves other seas alone; 3 hides ours; 4: nothing mirrored from the last picture; 6: the far camera's depth not kept for the near camera's sea; 7: no gusts on the water nor slicks.)</summary>
+        /// <summary>(Development build, for finding a fault: 1 leaves out the copy of the picture before the sea (the far camera's, where its picture is kept for the near camera's sea, stays: see FarDepth); 2 leaves other seas alone; 3 hides ours; 4: nothing mirrored from the last picture; 6: the far camera's depth not kept for the near camera's sea; 7: no gusts on the water nor slicks; 11: the last picture read with the camera of the frame before it, as until 2026-11-04 (see Mirror).)</summary>
         public static float Test;
         static readonly int idWeatherShadowSun = Shader.PropertyToID("_WeatherShadowSun");
         static readonly int idWorld = Shader.PropertyToID("_NaturalLightWorld"), idWorldLight = Shader.PropertyToID("_NaturalLightWorldLight");
         /// <summary>How bright the Mun (or another world) shows on the sea when it is the sea's light just now; 0 when the sun is (for the readout and tests).</summary>
         internal static float MoonNow;
 #if DEV
-        /// <summary>(Development build: "on" stops Scatterer's sea while this one is drawn (OtherSeas.Stop), anything else leaves it running as before.)</summary>
-        public static string StopScatterer(string v) { OtherSeas.Stopping = (v ?? "").Trim() == "on"; return "Scatterer's sea " + (OtherSeas.Stopping ? "stopped where this one is drawn" : "left running, drawn with nothing showing"); }
+        /// <summary>(Development build: "off" leaves Scatterer's sea running, drawn with nothing showing, as until 2026-11-05; "always" stops it while this one is drawn on any graphics system, OpenGL too, as from 2026-11-05 to 11-07; anything else stops it on Direct3D only, as now (OtherSeas.StopsHere).)</summary>
+        public static string StopScatterer(string v)
+        {
+            string w = (v ?? "").Trim();
+            OtherSeas.Stopping = w != "off"; OtherSeas.EvenOnOpenGL = w == "always";
+            return "Scatterer's sea " + (!OtherSeas.Stopping ? "left running, drawn with nothing showing" : OtherSeas.StopsHere ? "stopped where this one is drawn" : "left running on this graphics system, drawn with nothing showing (stopped on Direct3D only: \"always\" stops it here too)");
+        }
         /// <summary>(Development build: "off" places the seabed's maps anew point by point as before, anything else in plain loops: see Seabed.Step.)</summary>
         public static string SeabedFast(string v) { Seabed.FastAnew = (v ?? "").Trim() != "off"; return "the seabed placed anew " + (Seabed.FastAnew ? "in plain loops" : "point by point"); }
         /// <summary>(Development build: the seabed's jobs, timed: see Seabed.Jobs.)</summary>
@@ -123,6 +220,46 @@ namespace NaturalOcean
         public static string SeabedGate(string v) { Seabed.GateSweep = (v ?? "").Trim() != "off"; return "the seabed swept " + (Seabed.GateSweep ? "now and then while its points come in" : "all the while, as before 2026-10-20"); }
         /// <summary>(Development build: what is done with the other seas just now, OtherSeas.Report.)</summary>
         public static string Others() => OtherSeas.Report;
+        /// <summary>(Development build: a blow on the sea so many km ahead of the camera, "25", or "25 1680" with its megajoules (as
+        /// the explosions' warm-up dealt one at every flight's start until 2026-10-24): for timing what a blow far off costs.)</summary>
+        public static string StrikeAhead(string arg)
+        {
+            string[] w = (arg ?? "").Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            double km = w.Length > 0 ? double.Parse(w[0], System.Globalization.CultureInfo.InvariantCulture) : 25.0;
+            float mj = w.Length > 1 ? float.Parse(w[1], System.Globalization.CultureInfo.InvariantCulture) : 1680f;
+            Camera cam = FlightCamera.fetch != null ? FlightCamera.fetch.mainCamera : null;
+            CelestialBody body = FlightGlobals.currentMainBody;
+            if (cam == null || body == null) return "no camera or world";
+            Vector3 up = (Vector3)FlightGlobals.getUpAxis(body, cam.transform.position);
+            Vector3 ahead = Vector3.ProjectOnPlane(cam.transform.forward, up).normalized;
+            Vector3d far = (Vector3d)cam.transform.position + (Vector3d)ahead * (km * 1000.0);
+            double lat = body.GetLatitude(far), lon = body.GetLongitude(far);
+            double ground = body.TerrainAltitude(lat, lon);
+            Vector3d world = body.GetWorldSurfacePosition(lat, lon, 0.0);
+            const float Speed = 60f;
+            float tonnes = 2f * mj * 1e6f / (1000f * Speed * Speed);
+            Spray.Struck(body, world, tonnes, Speed, -up * Speed, 0f);
+            return "struck " + km.ToString("F1") + " km ahead (" + lat.ToString("F3") + ", " + lon.ToString("F3") + ", the ground " + ground.ToString("F0") + " m), " + tonnes.ToString("F0") + " t at " + Speed + " m/s";
+        }
+        /// <summary>(Development build, the spray's near fade (NearFade): "on" or "off"; "still 1.5 1.2 0.14", one mist puff 1.2 m
+        /// across and 0.14 thick held 1.5 m in front of the camera ("still 1.5 1.2 0.14 20 1": 20 degrees up from its look, lit white, not as the puffs are just now); "fly 5 15 1.2 0.14", five flying at the camera at 15 m/s, met
+        /// 0.6 s on and every 0.4 s after; "clear", the mist gone; anything else, what the fade's jobs saw last: Spray.PuffsAt.)</summary>
+        public static string SprayNear(string arg)
+        {
+            string[] w = (arg ?? "").Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string verb = w.Length > 0 ? w[0] : "";
+            if (verb == "on" || verb == "off") { NearFade.On = verb == "on"; return "the near fade " + verb; }
+            Camera cam = FlightCamera.fetch != null ? FlightCamera.fetch.mainCamera : null;
+            if (instance == null || instance.spray == null || cam == null) return "no spray or camera yet";
+            float F(int k, float d) => w.Length > k ? float.Parse(w[k], inv) : d;
+            if (verb == "clear") return instance.spray.ClearMist();
+            if (verb == "still") return instance.spray.PuffsAt(cam, F(1, 1.5f), F(2, 1.2f), F(3, 0.14f), 1, 0f, F(4, 0f), F(5, -1f));
+            if (verb == "fly") return instance.spray.PuffsAt(cam, 0f, F(3, 1.2f), F(4, 0.14f), (int)F(1, 5f), F(2, 15f), 0f, F(5, -1f));
+            return "the near fade " + (NearFade.On ? "on" : "off") + "; " + NearFade.Seen();
+        }
+        /// <summary>(Development build: "1" has a blow's dent worked out on the game's thread every frame, as until 2026-11-10; anything else off it, as now.)</summary>
+        public static string DentOnThread(string v) { Dents.OnThread = (v ?? "").Trim() == "1"; return "a dent's picture is worked out " + (Dents.OnThread ? "on the game's thread" : "off the game's thread"); }
 #endif
         public static string SetTest(string v) { Test = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture); if (instance != null) instance.Off(""); return "test " + Test; }
 
@@ -210,9 +347,17 @@ namespace NaturalOcean
                 cam.AddCommandBuffer(CameraEvent.BeforeImageEffects, mirrorGrab);
                 mirrorOn = cam;
             }
-            // (what the camera saw with when it drew the picture the sea will mirror this frame: last frame's)
-            Matrix4x4 with = seenBefore;
-            m.SetVector("_OceanMirrorX", new Vector4(with.m00, with.m01, with.m02, seenOnce ? 1f : 0f));
+            // (what the camera saw with when it drew the picture the sea will mirror this frame: last frame's. This is set in the
+            // frame's LateUpdate, before the camera's onPreCull, so that is the one kept at the last onPreCull, seenWith. Until
+            // 2026-11-04 it was the one before that, two frames old (Test 11, the old way): whenever the camera turned, the sea
+            // looked for the sky in the wrong place in the picture, by as far as the camera had turned in a frame, and a sea far
+            // off near the top of the picture fell off it onto the plain sky, which in rain is far bluer than the sky there: the
+            // owner, 2026-11-04, "this blue line ... like a flat plane ocean that's vertical ... when you move your camera very
+            // fast downward or sideways"; a light blue band along the horizon on each frame the camera had moved.)
+            bool asBefore = Test == 11f;
+            Matrix4x4 with = asBefore ? seenBefore : seenWith;
+            bool known = asBefore ? seenOnce : seenWith != Matrix4x4.zero;
+            m.SetVector("_OceanMirrorX", new Vector4(with.m00, with.m01, with.m02, known ? 1f : 0f));
             m.SetVector("_OceanMirrorY", new Vector4(with.m10, with.m11, with.m12, h / (cam.fieldOfView * Mathf.Deg2Rad)));
             m.SetVector("_OceanMirrorW", new Vector4(with.m30, with.m31, with.m32, Mathf.Max(0, mirror.mipmapCount - 2)));
             m.SetTexture("_OceanMirror", mirror);
@@ -233,6 +378,32 @@ namespace NaturalOcean
         static readonly System.Text.StringBuilder jitterSaid = new System.Text.StringBuilder();
         /// <summary>(development build) "go": note for sixteen camera drawings how far each camera's picture is shifted; anything else: what was noted.</summary>
         public static string Jitters(string what) { if (what == "go") { jitterSaid.Length = 0; jitterLeft = 16; return "noting"; } return jitterSaid.ToString(); }
+
+        // (For the sea flickering grey and blue from 1.5-4 km up, the PC's of 2026-10-25: the sea's place frame by frame. Trace("n")
+        // begins; TraceRead() gives a line a frame: the camera's height, the point under it on the sea's axes, whether the axes
+        // were begun afresh, and each seabed map's place, its points waiting and those known near the camera.)
+        static int traceLeft;
+        static bool traceForgot;
+        static readonly System.Text.StringBuilder traceSaid = new System.Text.StringBuilder();
+        public static string Trace(string frames) { traceSaid.Length = 0; traceLeft = int.TryParse((frames ?? "").Trim(), out int n) ? Mathf.Clamp(n, 1, 5000) : 300; Surface.Tracing = true; return "tracing the sea for " + traceLeft + " frames"; }
+        public static string TraceRead() { traceLeft = 0; Surface.Tracing = false; return traceSaid.ToString(); }
+        /// <summary>(Development build: every sea of this mod in the scene, by its root object: its rings switched on and drawn, and
+        /// whether it is this copy's. A copy of the mod taken out by a development reload may leave its rings behind.)</summary>
+        public static string Seas()
+        {
+            var b = new System.Text.StringBuilder();
+            foreach (MeshRenderer r in FindObjectsOfType<MeshRenderer>())
+            {
+                if (r == null || r.transform.parent == null || r.transform.parent.name != "Natural Ocean: the sea" || r.name != "ring 0") continue;
+                Transform root = r.transform.parent;
+                int on = 0, drawn = 0;
+                foreach (MeshRenderer m in root.GetComponentsInChildren<MeshRenderer>(true)) { if (m.enabled) on++; if (m.enabled && !m.forceRenderingOff) drawn++; }
+                bool ours = instance != null && instance.surface != null && instance.surface.Holds(root);
+                b.Append(ours ? "this copy's" : "ANOTHER's").Append(" sea (id ").Append(root.gameObject.GetInstanceID()).Append("): rings on ").Append(on).Append(", drawn ").Append(drawn)
+                 .Append(", ring 0 at ").Append(((Vector3d)r.transform.position - (FlightGlobals.currentMainBody != null ? FlightGlobals.currentMainBody.position : Vector3d.zero)).magnitude.ToString("F0")).Append(" m from the planet's middle; ");
+            }
+            return b.Length > 0 ? b.ToString() : "no sea of this mod in the scene";
+        }
 #endif
         static void UnderByWaves(Camera cam)
         {
@@ -465,6 +636,7 @@ namespace NaturalOcean
         void Off(string said)
         {
             Report = said;
+            SeaSound.Quiet();
             if (surface != null) surface.Hide();
             foreach (var pair in grabs) if (pair.Key != null) pair.Key.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque, pair.Value);
             foreach (var pair in grabs) pair.Value.Release();
@@ -490,6 +662,7 @@ namespace NaturalOcean
             if (seabed != null) seabed.Dispose();
             if (spray != null) spray.Dispose();
             if (weed != null) weed.Dispose();
+            SeaSound.Drop();
             if (instance == this) instance = null;
         }
 
@@ -535,6 +708,20 @@ namespace NaturalOcean
 
         void LateUpdate()
         {
+#if DEV
+            double costFrom = SeaCosts.Now;
+            try { Frame(); } finally { SeaCosts.Add("the sea's LateUpdate", costFrom); }
+        }
+
+        void Frame()
+        {
+#else
+            Frame();
+        }
+
+        void Frame()
+        {
+#endif
             if (Ocean.On == null || !Ocean.On) { Off(""); return; }
             if (!tried) Load();
             if (shader == null) { Off("Natural Ocean: " + why); return; }
@@ -547,6 +734,7 @@ namespace NaturalOcean
             // (from far above, the game's picture of the whole planet has the sea)
             if (high > 60000.0) { Off("Too high for the sea to be drawn in waves."); return; }
             if (waves == null) waves = new Waves();
+            Ocean.Give(waves);
             if (surface == null) surface = new Surface(shader);
             if (foam == null) foam = new Foam(foamShader);
             if (seabed == null) seabed = new Seabed();
@@ -571,6 +759,9 @@ namespace NaturalOcean
                 // down from 8-50 km after the camera had been taken there (the main chat, 2026-10-20). Shown that far out since the
                 // water's depth there has been read from the maps (07114f1).)
                 seabed.Forget(); foam.Forget();
+#if DEV
+                traceForgot = true;
+#endif
             }
             Vector3d first = (fx * firstFixed.x + fy * firstFixed.y + fz * firstFixed.z).normalized;
             Vector3d second = Vector3d.Cross(first, upScene).normalized;
@@ -682,7 +873,13 @@ namespace NaturalOcean
             // (a blow's dent in the water, and the next one expected: Dents)
             if (dents == null) dents = new Dents();
             Dents.Predict();
+#if DEV
+            double dentFrom = SeaCosts.Now;
+#endif
             dents.Step(body, at, m, foam != null ? foam.Work : null);
+#if DEV
+            SeaCosts.Add("the dent (Dents.Step)", dentFrom);
+#endif
             // (and the waves a hull makes going through the water: Wakes)
             if (wakes == null) wakes = new Wakes();
             wakes.Step(body, at, m);
@@ -690,7 +887,21 @@ namespace NaturalOcean
             Mark("mesh, dents");
             // ---- the ground under the sea, for the shallows; and how high each patch's waves are, for what the depth lets through
             seabed.Step(body, at, body.position + upScene * R, first, second, upScene, m, foam.Work);
-            var highA = new Vector4(waves.Patch[0].Height, waves.Patch[1].Height, waves.Patch[2].Height, waves.Patch[3].Height);
+#if DEV
+            if (traceLeft > 0)
+            {
+                traceLeft--;
+                traceSaid.Append(Time.frameCount).Append(' ').Append(Time.realtimeSinceStartup.ToString("F3")).Append(" high ").Append(high.ToString("F0"))
+                         .Append(" at ").Append(at.x.ToString("F0")).Append(',').Append(at.y.ToString("F0")).Append(traceForgot ? " BEGUN AFRESH" : "")
+                         .Append(" | near ").Append(near.nearClipPlane.ToString("F1")).Append('-').Append(near.farClipPlane.ToString("F0"))
+                         .Append(" far ").Append(far.nearClipPlane.ToString("F0")).Append('-').Append(far.farClipPlane.ToString("F0"))
+                         .Append(" cell ").Append(cell.ToString("F0")).Append(" rings ").Append(rings).Append(" | last cut").Append(Surface.CutSaid)
+                         .Append(" | ").Append(seabed.Says()).Append('\n');
+            }
+            traceForgot = false;
+            if (traceLeft == 0) Surface.Tracing = false;
+#endif
+            var highA =new Vector4(waves.Patch[0].Height, waves.Patch[1].Height, waves.Patch[2].Height, waves.Patch[3].Height);
             var highB = new Vector4(waves.Patch[4].Height, waves.Patch[5].Height, waves.Patch[6].Height, waves.Patch[7].Height);
             m.SetVector("_OceanHighA", highA); m.SetVector("_OceanHighB", highB);
             foam.Work.SetVector("_OceanHighA", highA); foam.Work.SetVector("_OceanHighB", highB);
@@ -896,6 +1107,17 @@ namespace NaturalOcean
                 + " reaches the camera (sky " + shade.Sky.ToString("F2") + ", grey " + shade.Grey.ToString("F2") + (shade.SunDimmed ? ", the sun's light already dimmed by the weather" : "") + "); sky overhead " + top.r.ToString("F2") + " " + top.g.ToString("F2") + " " + top.b.ToString("F2")
                 + ", at the horizon " + low.r.ToString("F2") + " " + low.g.ToString("F2") + " " + low.b.ToString("F2") + ".";
 #endif
+            // ---- what the sea sounds like here (where the mod has its recordings: SeaSound)
+            {
+                Vector3d eye = (Vector3d)near.transform.position;
+                float level = HeightAt(eye);
+                float ground = seabed != null && SpotOf(eye, out Vector2d spot) ? seabed.At(spot.x, spot.y) : Seabed.Unknown;
+                // (where the seabed's maps do not reach yet, the ground's own height there: taken for the open sea, the runway was
+                // heard as a rough sea just after the craft was put there, 2026-10-24)
+                if (ground == Seabed.Unknown) ground = (float)body.TerrainAltitude(lat, lon, true);
+                SeaSound.Step((float)high - level, waves.HeightNow, ground, high < level, near.transform.position);
+            }
+            Mark("sound");
             // (the words twice a second, not every frame: a new string each frame was garbage the collector came round for)
             if (Time.unscaledTime - reportAt > 0.5f) { reportAt = Time.unscaledTime; Report = "The sea: wind " + sea.Wind.ToString("F1") + " m/s, waves " + waves.HeightNow.ToString("F1") + " m (the mean of the highest third), swell " + sea.Swell.ToString("F1") + " m every " + sea.SwellPeriod.ToString("F0") + " s."; }
             Mark("words");
@@ -1056,6 +1278,10 @@ namespace NaturalOcean
         /// <summary>The same, and where on the still sea that water belongs (on the sea's two axes, m: as the foam is kept).</summary>
         public static float WaterAt(Vector3d world, out Vector3 flow, out Vector2d place)
         {
+#if DEV
+            double costFrom = SeaCosts.Now;
+            try {
+#endif
             flow = Vector3.zero; place = new Vector2d(0.0, 0.0);
             Sea s = instance;
             CelestialBody body = FlightGlobals.currentMainBody;
@@ -1070,6 +1296,9 @@ namespace NaturalOcean
             flow = (Vector3)(first * along.x + upScene * along.y + second * along.z);
             place = new Vector2d(fromX, fromZ);
             return height;
+        #if DEV
+            } finally { SeaCosts.Add("Sea.WaterAt", costFrom); }
+#endif
         }
 
         /// <summary>Where a place in the scene lies on the still sea's two axes (m: as the foam and the dents are kept), not following the water's own motion.</summary>
@@ -1126,6 +1355,10 @@ namespace NaturalOcean
         /// <summary>How high the sea stands over a place in the scene, against its own level (m); nothing where there is no sea drawn.</summary>
         public static float HeightAt(Vector3d world)
         {
+#if DEV
+            double costFrom = SeaCosts.Now;
+            try {
+#endif
             Sea s = instance;
             CelestialBody body = FlightGlobals.currentMainBody;
             if (s == null || s.waves == null || body == null || s.placedOn != body.bodyName) return 0f;
@@ -1136,6 +1369,9 @@ namespace NaturalOcean
             Vector3d from = world - (body.position + upScene * body.Radius);
             double x = s.at.x + Vector3d.Dot(from, first), z = s.at.y + Vector3d.Dot(from, second);
             return s.waves.HeightAt(x, z, s.seabed != null ? Mathf.Max(-s.seabed.At(x, z), 0f) : 1000f);
+        #if DEV
+            } finally { SeaCosts.Add("Sea.HeightAt", costFrom); }
+#endif
         }
 
 #if DEV
@@ -1366,6 +1602,10 @@ namespace NaturalOcean
         static void TuneFetch(float km) { Reach = km * 1000f; }
         /// <summary>(Development build: the sea's rings drawn whole by both cameras, as before, or only what they see.)</summary>
         public static string WatchRings(string n) { if (n == "read") { string t = Surface.Watched.ToString(); Surface.Watched.Length = 0; return t; } Surface.Watching = int.Parse(n); Surface.Watched.Length = 0; return "watching"; }
+        public static string CutLag() => Surface.Lag();
+        public static string Misses(string what) => Surface.Misses(what);
+        public static string WholeTiles() { Surface.WholeTiles = !Surface.WholeTiles; return Surface.WholeTiles ? "every tile kept, the rings by the cameras' ranges" : "the tiles cut again"; }
+        public static string AllRings() { Surface.AllRings = !Surface.AllRings; return Surface.AllRings ? "every ring drawn by both cameras, the tiles still cut" : "the rings by the cameras' ranges again"; }
         public static string WholeSea() { Surface.DrawWhole = !Surface.DrawWhole; return Surface.DrawWhole ? "the sea drawn whole by both cameras, as before" : "the sea drawn where the cameras see it"; }
 
         /// <summary>(Development build: the numbers the white water goes by, set while the game runs: "eased 0.2 runs 0.5 ragged 0.14
@@ -1617,12 +1857,29 @@ namespace NaturalOcean
         static readonly List<object> stopped = new List<object>();             // (Scatterer's managers whose sea is stopped: plain objects, not components)
         static float madeAgainAt = -100f;
         /// <summary>
-        /// (Off: Scatterer's sea drawn with nothing showing, as before. Tried in the game on 2026-10-18 with the development build's
-        /// Sea.StopScatterer("on"): the sea was stopped and made again as meant, but while it was stopped the whole picture was black
-        /// (Scatterer's scattering is set up for a world with its sea, and is left without one: the rendering chat's warning). Kept
-        /// for the cleaner way, a patch to Scatterer's list of worlds with seas, which is the owner's to choose.)
+        /// (On since 2026-11-05, the owner's choice: drawn with nothing showing, as until then, Scatterer's sea showed on a frame
+        /// the camera had turned, a light blue band standing above the horizon in a fast swing over the sea, "like a flat plane
+        /// ocean that's vertical" (the owner, 2026-11-04; 40 frames of 545 in tools/dev/scratch-2026-11-04-pc/seapan.py's swing,
+        /// none with it stopped; TODO item 19). The cause, found after: Natural Light's weather veil reckoned the sky from the
+        /// camera's look of the frame before and left a strip at the horizon unveiled, Scatterer's sea in it (mended there,
+        /// Veil.cs, Turned: none with Scatterer's sea drawn). Kept stopped as chosen: Scatterer's sea is not drawn for nothing
+        /// under ours. Tried on 2026-10-18, the whole picture was black while it was stopped (Scatterer's scattering set up for a
+        /// world with its sea); on 2026-11-05 on Direct3D, with Scatterer's present build, the picture whole. Made again whenever
+        /// this sea is not drawn (Back). Off: drawn with nothing showing, as before (Sea.StopScatterer "off" in the development
+        /// build). On Direct3D only: see StopsHere.)
         /// </summary>
-        internal static bool Stopping;
+        internal static bool Stopping = true;
+        /// <summary>(Development build: stopped on OpenGL too, as from 2026-11-05 to 11-07: Sea.StopScatterer "always".)</summary>
+        internal static bool EvenOnOpenGL;
+        /// <summary>
+        /// (Whether Scatterer's sea is stopped on this graphics system: on Direct3D 11 alone, where the picture was seen whole with it
+        /// stopped (2026-11-05). On OpenGL, the Mac's and the PC's started with -force-glcore, the whole picture is black while it is
+        /// stopped, as it was on 2026-10-18: found again 2026-11-07 on the PC, every view black once the copy with it stopped by
+        /// default was running, the pad's picture back at once with it running (Sea.StopScatterer "off"), black again with "always".
+        /// There it is left running, drawn with nothing showing, as until 2026-11-05: the blue band it was stopped for was Natural
+        /// Light's veil, mended there.)
+        /// </summary>
+        internal static bool StopsHere => Stopping && (EvenOnOpenGL || SystemInfo.graphicsDeviceType == GraphicsDeviceType.Direct3D11);
 
         public static void Away(CelestialBody body)
         {
@@ -1722,7 +1979,7 @@ namespace NaturalOcean
                 try { leaver = new Leaver(); GameEvents.onGameSceneLoadRequested.Add(leaver.Heard); }
                 catch (Exception e) { Debug.Log("[Natural Ocean] the scene's leaving is not heard (" + e.Message + "): Scatterer's sea may be made again as a scene is left"); }
             }
-            if (canStop && (!Stopping || Sea.Test == 62f)) MakeAgain();
+            if (canStop && (!StopsHere || Sea.Test == 62f)) MakeAgain();
             else if (canStop && Time.unscaledTime - madeAgainAt > 10f)
                 for (int i = found.Count - 1; i >= 0; i--) if (Stop(found[i], body)) found.RemoveAt(i);
             faded.Clear(); nodes.Clear();
@@ -1734,7 +1991,7 @@ namespace NaturalOcean
                 }
             if (faded.Count > 0 && !hooked) { Camera.onPreRender += Fade; hooked = true; }
             Report = (kept.Count > 0 ? kept.Count + " pieces of the game's sea kept from being drawn; " : "") + (scatterers == null ? "no Scatterer" : faded.Count + " of Scatterer's seas drawn with nothing showing, " + stopped.Count + " stopped")
-                     + (Stopping ? " (stopping " + (canStop ? "can be done" : "cannot be done") + "; last try: " + StopSaid + ")" : "");
+                     + (StopsHere ? " (stopping " + (canStop ? "can be done" : "cannot be done") + "; last try: " + StopSaid + ")" : Stopping ? " (left running on this graphics system: stopped on Direct3D only)" : "");
         }
 
         sealed class Leaver { public void Heard(GameScenes to) => leaving = true; }

@@ -31,6 +31,8 @@ namespace NaturalOcean
         readonly Material mistMaterial, dropMaterial, sheetMaterial;
         readonly Texture2D wisps, dot;
         readonly System.Random random = new System.Random(12345);
+        // (the seeds the puffs and sheets are given (Let): apart, so that the spray's own draws are as they were)
+        readonly System.Random seeds = new System.Random(54321);
         ParticleSystem.EmitParams one;
         /// <summary>Bursts let go in the last second or so, and puffs and drops alive (for the report).</summary>
         public int Bursts, Alive;
@@ -110,6 +112,8 @@ namespace NaturalOcean
             mistDrawn.sharedMaterial = mistMaterial;
             mist.Play(false);
             try { FloatingOrigin.RegisterParticleSystem(mist); } catch (Exception) { }
+            // (thinned out near the camera: NearFade)
+            NearFade.Put(mist);
 
             // ---- the drops
             dropHolder = new GameObject("Natural Ocean: spray (drops)") { layer = 0 };
@@ -200,6 +204,7 @@ namespace NaturalOcean
             sheetDrawn.sharedMaterial = sheetMaterial;
             sheets.Play(false);
             try { FloatingOrigin.RegisterParticleSystem(sheets); } catch (Exception) { }
+            NearFade.Put(sheets);
             one = new ParticleSystem.EmitParams();
         }
 
@@ -328,11 +333,111 @@ namespace NaturalOcean
                     one.startSize = (0.9f + 1.2f * Chance()) * Mathf.Clamp(0.6f + 0.3f * t.Wide, 0.7f, 1.8f);
                     one.startLifetime = 1.6f + 2.4f * Chance();
                     one.rotation = Chance() * 360f;
-                    one.startColor = new Color(light.r, light.g, light.b, 0.09f + 0.08f * Chance());
-                    mist.Emit(one, 1);
+                    Let(mist, new Color(light.r, light.g, light.b, 0.09f + 0.08f * Chance()));
                 }
             }
             thrown.Clear();
+        }
+
+        // ---- a small round into the water: a spout (since 2026-11-09, for Volumetric Armory's splashes of BD Armory's rounds)
+        // What a bullet or a small shell does going into the sea fast and slanting (high-speed photographs of rifle and cannon
+        // rounds entering water; gun-camera film of strafing over the sea): not a crown thrown wide, as something coming down
+        // into the water throws (Splash), but a slender spout of spray standing up from where it went in, leaning back the way
+        // it came, its drops thickest low down and few at its tip; a low fan of drops thrown forward along the way it was going;
+        // a little mist where it stood; and the water there white for a moment. A burst's rounds each make their own, so a burst
+        // stands on the sea as a row of spouts. How high: as the blow's jet would stand (Struck: two and a half times its
+        // crater's radius), which whoever asks works out from the round's energy.
+        struct Spouted { public Vector3 Where, Up, Going; public float High, Wide; }
+        static readonly System.Collections.Generic.List<Spouted> spouted = new System.Collections.Generic.List<Spouted>();
+
+        /// <summary>A small round has gone into the water at a place in the scene (on the water's surface there), going so (m/s,
+        /// the scene's axes): a spout of spray so high (m) is thrown up there at the next frame, its foot so wide (m).</summary>
+        public static void Spout(Vector3 where, Vector3 up, Vector3 going, float high, float wide)
+        {
+            if (spouted.Count < 48) spouted.Add(new Spouted { Where = where, Up = up, Going = going, High = high, Wide = wide });
+        }
+
+        void Spouts(Color light, Vector3 windWay)
+        {
+            CelestialBody body = FlightGlobals.currentMainBody;
+            float g = body != null ? (float)(body.GeeASL * 9.80665) : 9.81f;
+            for (int n = 0; n < spouted.Count; n++)
+            {
+                Spouted s = spouted[n];
+                Vector3 up = s.Up;
+                Vector3 flat = Vector3.ProjectOnPlane(s.Going, up);
+                Vector3 a = Vector3.Cross(up, Vector3.right);
+                if (a.sqrMagnitude < 0.01f) a = Vector3.Cross(up, Vector3.forward);
+                a.Normalize();
+                Vector3 ahead = flat.sqrMagnitude > 1e-4f ? flat.normalized : a;
+                Vector3 side = Vector3.Cross(up, ahead).normalized;
+                float slantDown = s.Going.sqrMagnitude > 1f ? Mathf.Atan2(-Vector3.Dot(s.Going, up), flat.magnitude) : 1.5708f;
+                float lying = Mathf.Cos(Mathf.Clamp(slantDown, 0f, 1.5708f));
+                // (leaning back the way it came, the more the flatter it came in: up to some twenty degrees)
+                float lean = 0.35f * lying;
+                Vector3 column = (up * Mathf.Cos(lean) - ahead * Mathf.Sin(lean)).normalized;
+                float high = Mathf.Clamp(s.High, 0.3f, 12f), wide = Mathf.Clamp(s.Wide, 0.1f, 1.5f);
+                float top = Mathf.Sqrt(2f * g * high) / Mathf.Max(Mathf.Cos(lean), 0.5f);
+                // (the column: most of its water slow, at its foot and spreading; the fastest at its middle, reaching the top)
+                int count = Mathf.Clamp((int)(70f + 60f * high * Mathf.Sqrt(wide)), 70, 450);
+                for (int k = 0; k < count; k++)
+                {
+                    float q = Chance();
+                    float rise = top * (0.3f + 0.7f * q * q * (0.8f + 0.2f * Chance()));
+                    float slow = 1f - rise / top;
+                    float turn = Chance() * 6.2832f, out_ = Mathf.Sqrt(Chance());
+                    Vector3 way = ahead * Mathf.Cos(turn) + side * Mathf.Sin(turn);
+                    one.position = s.Where + way * (wide * (0.2f + 0.5f * slow) * out_) + up * (0.15f * Chance());
+                    one.velocity = column * rise + way * (rise * (0.03f + 0.16f * out_ * (0.4f + slow))) + windWay * 0.1f;
+                    one.startSize = (0.04f + 0.08f * Chance()) * Mathf.Clamp(0.6f + wide, 0.7f, 1.5f);
+                    one.startLifetime = 2f * rise * Mathf.Cos(lean) / g + 0.2f;
+                    one.rotation = 0f;
+                    // (seen through at its edges and thinner where it is slow, much of it in the shade of the rest: not a white post)
+                    float lit = (0.75f + 0.25f * Chance()) * (1f - 0.2f * slow);
+                    one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.25f + 0.35f * Chance()) * (1f - 0.35f * out_) * (1f - 0.35f * slow));
+                    drops.Emit(one, 1);
+                    // (and every fourth, a torn piece of the column itself: soft, larger, seen through)
+                    if (k % 4 == 0)
+                    {
+                        one.startSize = (0.25f + 0.3f * Chance()) * Mathf.Clamp(0.5f * high, 0.4f, 1.6f);
+                        one.rotation = Chance() * 360f;
+                        Let(sheets, new Color(light.r * lit, light.g * lit, light.b * lit, (0.14f + 0.16f * Chance()) * (1f - 0.4f * slow)));
+                    }
+                }
+                // (a low fan thrown forward, the way it was going: a slanting round throws its water ahead of where it went in)
+                int fan = Mathf.RoundToInt(count * 0.35f * lying);
+                for (int k = 0; k < fan; k++)
+                {
+                    float turn = (Chance() - 0.5f) * 1.6f;
+                    Vector3 way = ahead * Mathf.Cos(turn) + side * Mathf.Sin(turn);
+                    float rise = top * (0.2f + 0.35f * Chance());
+                    one.position = s.Where + way * (wide * 0.4f * Chance()) + up * (0.1f * Chance());
+                    one.velocity = up * rise + way * (rise * (0.6f + 0.9f * Chance())) + windWay * 0.1f;
+                    one.startSize = (0.04f + 0.07f * Chance()) * Mathf.Clamp(0.6f + wide, 0.7f, 1.5f);
+                    one.startLifetime = 2f * rise / g + 0.2f;
+                    one.rotation = 0f;
+                    float lit = 0.72f + 0.28f * Chance();
+                    one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, 0.2f + 0.3f * Chance());
+                    drops.Emit(one, 1);
+                }
+                // (a little mist where it stood, taken by the wind)
+                Vector3 c = Vector3.Cross(up, a);
+                int puffs = Mathf.Clamp((int)(4f + 3f * high), 4, 30);
+                for (int k = 0; k < puffs; k++)
+                {
+                    float turn = Chance() * 6.2832f, out_ = Mathf.Sqrt(Chance());
+                    Vector3 way = a * Mathf.Cos(turn) + c * Mathf.Sin(turn);
+                    one.position = s.Where + way * (out_ * wide) + up * (high * (0.15f + 0.7f * Chance()));
+                    one.velocity = up * (0.2f + 0.8f * Chance()) + way * (0.3f + 0.8f * Chance()) + windWay * 0.6f;
+                    one.startSize = (0.6f + 0.8f * Chance()) * Mathf.Clamp(0.35f * high, 0.6f, 2.5f);
+                    one.startLifetime = 1.5f + 2.5f * Chance();
+                    one.rotation = Chance() * 360f;
+                    Let(mist, new Color(light.r, light.g, light.b, 0.06f + 0.07f * Chance()));
+                }
+                // (and the water where it went in churned white, a patch as wide as the spout's foot and more, fading as foam fades)
+                if (Sea.SpotOf((Vector3d)s.Where, out Vector2d spot)) Foam.Mark(spot, Mathf.Max(3f * wide, 0.8f), Mathf.Clamp(0.35f + 0.1f * high, 0.4f, 0.9f));
+            }
+            spouted.Clear();
         }
 
         // ---- a hull going fast through the water (Floating.cs): sheets of spray off its sides (since 0.3.0)
@@ -380,8 +485,8 @@ namespace NaturalOcean
                     one.startSize = (torn ? 0.25f + 0.35f * Chance() : 0.04f + 0.08f * Chance()) * Mathf.Clamp(0.6f + 0.25f * t.Wide, 0.7f, 1.5f);
                     one.startLifetime = 0.5f + 0.9f * Chance();
                     one.rotation = torn ? Chance() * 360f : 0f;
-                    one.startColor = new Color(light.r, light.g, light.b, torn ? 0.25f + 0.3f * Chance() : 0.45f + 0.4f * Chance());
-                    if (torn) sheets.Emit(one, 1); else drops.Emit(one, 1);
+                    Color thrownColour = new Color(light.r, light.g, light.b, torn ? 0.25f + 0.3f * Chance() : 0.45f + 0.4f * Chance());
+                    if (torn) Let(sheets, thrownColour); else { one.startColor = thrownColour; drops.Emit(one, 1); }
                 }
                 // (and mist, a little, where the sheets come down: thrown at the hull's speed it hangs behind it)
                 int puffs = Mathf.Min((int)(much / 14f) + (Chance() < (much / 14f) % 1f ? 1 : 0), 10);
@@ -393,8 +498,7 @@ namespace NaturalOcean
                     one.startSize = (0.6f + 0.9f * Chance()) * Mathf.Clamp(0.6f + 0.3f * t.Wide, 0.7f, 1.8f);
                     one.startLifetime = 1.2f + 1.8f * Chance();
                     one.rotation = Chance() * 360f;
-                    one.startColor = new Color(light.r, light.g, light.b, 0.07f + 0.07f * Chance());
-                    mist.Emit(one, 1);
+                    Let(mist, new Color(light.r, light.g, light.b, 0.07f + 0.07f * Chance()));
                 }
             }
             sheeted.Clear();
@@ -487,6 +591,7 @@ namespace NaturalOcean
                     b.Crowned = true;
                     LastBlow = "cavity " + R.ToString("F1") + " m, crown " + crown.ToString("F0") + " m, jet " + jet.ToString("F0") + " m, from " + (b.Energy / 1e6f).ToString("F1") + " MJ";
                     Debug.Log("[Natural Ocean] a craft struck the sea: " + LastBlow);
+                    SeaSound.Splash(at, b.Energy);
                     // (No white water yet: the crater stands open for a moment, dark inside the crown (Dents); the water is churned
                     // white as its walls fall back in, below.)
                     // (and the water itself dented: the crater, its walls falling back in and the rings it sends out: Dents)
@@ -550,8 +655,7 @@ namespace NaturalOcean
                         // (thickest where it leaves the water, a wall of it, tearing open higher up: the slower pieces, which stay
                         // low, the more solid)
                         float low_ = 1f - rise / Mathf.Sqrt(2f * g * crown);
-                        one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.16f + 0.22f * Chance()) * (0.7f + 0.6f * low_));
-                        sheets.Emit(one, 1);
+                        Let(sheets, new Color(light.r * lit, light.g * lit, light.b * lit, (0.16f + 0.22f * Chance()) * (0.7f + 0.6f * low_)));
                     }
                     Puffs(at, up, a, c, R, R * 1.1f, crown * 0.6f, Mathf.Clamp((int)(50f + 5f * R), 50, 260), light, windWay);
                     // (The plume (2026-10-17). The crater's size goes by the blow's energy, but what a fast blow throws first is thrown
@@ -579,8 +683,7 @@ namespace NaturalOcean
                             one.startLifetime = 2f * v * Mathf.Max(Vector3.Dot(way, up), 0.2f) / g + 0.6f;
                             one.rotation = Chance() * 360f;
                             float lit = 0.8f + 0.2f * Chance();
-                            one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, 0.12f + 0.16f * Chance());
-                            sheets.Emit(one, 1);
+                            Let(sheets, new Color(light.r * lit, light.g * lit, light.b * lit, 0.12f + 0.16f * Chance()));
                         }
                         // (and its mist, high: what is left in the air of the plume's spray)
                         Puffs(at, up, a, c, R, R * 0.6f, Mathf.Min(plumeSpeed * plumeSpeed / (2f * g), 400f) * 0.7f, Mathf.Clamp((int)(30f + 3f * R), 30, 200), light, windWay);
@@ -637,8 +740,7 @@ namespace NaturalOcean
                         {
                             one.startSize = (0.5f + 0.5f * Chance()) * Mathf.Max(0.14f * R, 0.35f);
                             one.rotation = Chance() * 360f;
-                            one.startColor = new Color(light.r * lit, light.g * lit, light.b * lit, (0.08f + 0.12f * Chance()) * (1f - 0.4f * out_));
-                            sheets.Emit(one, 1);
+                            Let(sheets, new Color(light.r * lit, light.g * lit, light.b * lit, (0.08f + 0.12f * Chance()) * (1f - 0.4f * out_)));
                         }
                     }
                     b.JetSent = upTo;
@@ -773,6 +875,62 @@ namespace NaturalOcean
             return list;
         }
 
+        /// <summary>
+        /// One puff of mist or torn sheet let go as `one` has it, coloured so, its alpha kept in the lowest byte of its random seed
+        /// for the near fade (NearFade), which thins it from that each frame as it comes near the camera.
+        /// </summary>
+        void Let(ParticleSystem into, Color colour)
+        {
+            Color32 c = colour;
+            one.startColor = c;
+            one.randomSeed = ((uint)seeds.Next() << 8) | c.a;
+            into.Emit(one, 1);
+            one.ResetRandomSeed();
+        }
+#if DEV
+        /// <summary>(Development build, for the near fade: Sea.SprayNear. With no `speed`, one mist puff `size` m across and `alpha`
+        /// thick held `ahead` m in front of the camera, at its thickest 2 s on (a twentieth into a 40 s life), let go higher by as
+        /// far as it falls in that time (its size reckoned along the curve's straight lines, 0.42 of the start there: Unity's own
+        /// curve has 0.35, so that "1.2" is drawn 1.0 m across); with a `speed`, `count` puffs flying at the camera
+        /// at so many m/s, a little up and to one side as well (drawn out along their way, puffs coming straight at the camera are
+        /// seen end on), each passing through it 0.6 s on and every 0.4 s after, a quarter into its life.)</summary>
+        public string PuffsAt(Camera cam, float ahead, float size, float alpha, int count, float speed, float upDegrees = 0f, float lit = -1f)
+        {
+            Transform c = cam.transform;
+            // (lit as the puffs are just now, or so white: by night the sky is black and still, the best ground to see them on)
+            Color colour = lit < 0f ? new Color(LastLight.r, LastLight.g, LastLight.b, alpha) : new Color(lit, lit, lit, alpha);
+            int before = mist.particleCount;
+            if (speed <= 0f)
+            {
+                Vector3 falls = Physics.gravity * (0.015f * 0.5f * 2f * 2f);
+                float up = upDegrees * Mathf.Deg2Rad;
+                one.position = c.position + (c.forward * Mathf.Cos(up) + c.up * Mathf.Sin(up)) * ahead - falls;
+                one.velocity = c.right * 0.05f;
+                one.startSize = size / (0.3f + 0.7f * (0.05f / 0.3f));
+                one.startLifetime = 40f;
+                one.rotation = 0f;
+                Let(mist, colour);
+                return "a mist puff " + size.ToString("F2") + " m across, " + alpha.ToString("F2") + " thick, held " + ahead.ToString("F2") + " m ahead, " + upDegrees.ToString("F0") + " degrees up (at its thickest 2 s on); the mist's puffs " +
+                       before + " before, " + mist.particleCount + " after";
+            }
+            for (int k = 0; k < count; k++)
+            {
+                float t = 0.6f + 0.4f * k;
+                Vector3 way = (-c.forward + c.up * 0.3f + c.right * (k % 2 == 0 ? 0.3f : -0.3f)).normalized * speed;
+                one.position = c.position - way * t;
+                one.velocity = way;
+                one.startLifetime = t / 0.25f;
+                one.startSize = size / (0.3f + 0.7f * (0.25f / 0.3f));
+                one.rotation = Chance() * 360f;
+                Let(mist, colour);
+            }
+            return count + " mist puffs " + size.ToString("F2") + " m across, " + alpha.ToString("F2") + " thick, flying at the camera at " + speed.ToString("F1") +
+                   " m/s, met 0.6 s on and every 0.4 s after; the mist's puffs " + before + " before, " + mist.particleCount + " after, of at most " + mist.main.maxParticles;
+        }
+        /// <summary>(Development build: all the mist gone at once, for the near fade's tests.)</summary>
+        public string ClearMist() { int n = mist.particleCount; mist.Clear(); return n + " mist puffs cleared"; }
+#endif
+
         /// <summary>Mist over a blow: soft puffs from round about its middle up to so high, rising a little and drifting with the wind.</summary>
         void Puffs(Vector3 at, Vector3 up, Vector3 a, Vector3 c, float R, float spread, float high, int count, Color light, Vector3 windWay)
         {
@@ -785,8 +943,7 @@ namespace NaturalOcean
                 one.startSize = (0.5f + 1f * Chance()) * Mathf.Clamp(R * 0.6f, 1.2f, 30f);
                 one.startLifetime = 5f + 10f * Chance();
                 one.rotation = Chance() * 360f;
-                one.startColor = new Color(light.r, light.g, light.b, 0.07f + 0.09f * Chance());
-                mist.Emit(one, 1);
+                Let(mist, new Color(light.r, light.g, light.b, 0.07f + 0.09f * Chance()));
             }
         }
 
@@ -806,7 +963,14 @@ namespace NaturalOcean
             LastLight = light;
             if (thrown.Count > 0 && Much > 0f) Splashes(light); else thrown.Clear();
             if (sheeted.Count > 0 && Much > 0f) HullSprays(light); else sheeted.Clear();
+            if (spouted.Count > 0 && Much > 0f) Spouts(light, (Vector3)(first * Math.Cos(windTo) + second * Math.Sin(windTo)) * wind); else spouted.Clear();
+#if DEV
+            double costFrom = SeaCosts.Now;
+#endif
             if (impacts.Count > 0) Impacts(light, wind, windTo, first, second);
+#if DEV
+            if (impacts.Count > 0) SeaCosts.Add("the blows (Spray.Impacts)", costFrom);
+#endif
             counted += seconds;
             if (counted > 1f) { Bursts = burstsNow; burstsNow = 0; counted = 0f; }
             // (Any breaking water throws some spray; from a strong breeze the wind takes the tops off as well, and from a gale
@@ -883,8 +1047,7 @@ namespace NaturalOcean
                             one.rotation = Chance() * 360f;
                             // (white and close where it is torn off, thinning as it spreads)
                             // (Each thin, and many: a few thick ones were cotton balls standing on the sea when looked at along the wind.)
-                            one.startColor = new Color(light.r, light.g, light.b, Mathf.Min((0.14f + 0.12f * Chance()) * (0.6f + 0.4f * Mathf.Min(strength, 1f)), 0.9f));
-                            mist.Emit(one, 1);
+                            Let(mist, new Color(light.r, light.g, light.b, Mathf.Min((0.14f + 0.12f * Chance()) * (0.6f + 0.4f * Mathf.Min(strength, 1f)), 0.9f)));
                         }
                     }
             }

@@ -198,6 +198,37 @@ namespace NaturalOcean
         }
 
         // (when a scene is left the game has already destroyed the rings by the time the sea is told: nothing to hide then)
+#if DEV
+        static readonly Vector3[] cutAt = new Vector3[2];
+        static readonly Quaternion[] cutLooks = { Quaternion.identity, Quaternion.identity };
+        static readonly float[] cutWide = new float[2], lagMove = new float[2], lagTurn = new float[2], lagWide = new float[2];
+        static readonly int[] lagFrames = new int[2];
+        /// <summary>(Development build: this frame's cut, ring by ring: tiles seen of those it has, and where its run starts and how
+        /// long it is in its indices, in hundredths of once round.)</summary>
+        internal static readonly System.Text.StringBuilder CutSaid = new System.Text.StringBuilder();
+        internal static bool Tracing;
+        static int missLeft;
+        int runFirst, runLength;
+        static readonly System.Text.StringBuilder missSaid = new System.Text.StringBuilder();
+        /// <summary>(Development build: "go" notes the next 40 tiles left out that a camera sees; anything else gives what was noted.)</summary>
+        internal static string Misses(string what) { if (what == "go") { missSaid.Length = 0; missLeft = 40; return "noting"; } return missSaid.Length > 0 ? missSaid.ToString() : "none noted"; }
+        /// <summary>(Development build: since last asked, the most each flight camera moved (m), turned (degrees) and widened (degrees
+        /// of view) between the choosing of the sea's tiles and its own culling: tiles chosen for a view the camera then leaves.)</summary>
+        internal static string Lag()
+        {
+            string said = "";
+            for (int i = 0; i < 2; i++)
+            {
+                said += "flight camera " + i + ": moved " + lagMove[i].ToString("F2") + " m, turned " + lagTurn[i].ToString("F2") + " deg, widened " + lagWide[i].ToString("F2") + " deg over " + lagFrames[i] + " frames; ";
+                lagMove[i] = lagTurn[i] = lagWide[i] = 0f; lagFrames[i] = 0;
+            }
+            return said;
+        }
+
+        /// <summary>(Development build: whether a root object is this surface's own.)</summary>
+        public bool Holds(Transform t) => root != null && t == root.transform;
+#endif
+
         public void Hide()
         {
             for (int n = 0; n < Rings; n++) { if (drawn[n] != null) drawn[n].enabled = false; wanted[n] = false; }
@@ -215,6 +246,9 @@ namespace NaturalOcean
 #if DEV
         /// <summary>(Development build: every ring drawn whole by both cameras, as before 2026-10-18, or only what they see: to compare.)</summary>
         internal static bool DrawWhole;
+        /// <summary>(Development build: every tile of each ring kept, the rings still given to the cameras by their ranges; and the
+        /// other way round, each camera drawing every ring, the tiles still cut: to tell which leaves out what is seen.)</summary>
+        internal static bool WholeTiles, AllRings;
 #endif
 
         static bool Flight(Camera cam, out int which)
@@ -239,11 +273,24 @@ namespace NaturalOcean
 #endif
             if (laidFrame != Time.frameCount || !showing || !Flight(cam, out _)) { WatchEnd(cam); return; }
             if (cutFrame != Time.frameCount) Cut();
+#if DEV
+            // (how far this camera has gone, turned and widened since the tiles were chosen for it)
+            if (Flight(cam, out int lagOf) && lagOf < 2 && cutFrame == Time.frameCount)
+            {
+                lagMove[lagOf] = Mathf.Max(lagMove[lagOf], (cam.transform.position - cutAt[lagOf]).magnitude);
+                lagTurn[lagOf] = Mathf.Max(lagTurn[lagOf], Quaternion.Angle(cutLooks[lagOf], cam.transform.rotation));
+                lagWide[lagOf] = Mathf.Max(lagWide[lagOf], Mathf.Abs(cam.fieldOfView - cutWide[lagOf]));
+                lagFrames[lagOf]++;
+            }
+#endif
             if (!cutting) { WatchEnd(cam); return; }
             // (Kept from this camera with forceRenderingOff, the renderer itself left on. Switched off and on round each camera, every
             // frame, as until 2026-10-18, a ring lost what Unity keeps of it from frame to frame, and the sea flickered as a rocket
             // climbed: from one frame to the next the whole far sea changed, by 25 levels of 255, in the eight-frame pattern of the
             // antialiasing's jitter ("the ocean still flickers a whole bunch when you're going up", 12:40). Filmed again: none.)
+#if DEV
+            if (AllRings) { for (int n = 0; n < count; n++) drawn[n].forceRenderingOff = !wanted[n]; WatchEnd(cam); return; }
+#endif
             for (int n = 0; n < count; n++) drawn[n].forceRenderingOff = !(wanted[n] && Reaches(cam, n));
             WatchEnd(cam);
         }
@@ -279,6 +326,10 @@ namespace NaturalOcean
         {
             cutFrame = Time.frameCount;
             cutting = false;
+#if DEV
+            CutSaid.Length = 0;
+            bool say = Tracing;
+#endif
             FlightCamera fc = FlightCamera.fetch;
             if (fc == null || fc.cameras == null) { Whole(); return; }
 #if DEV
@@ -303,6 +354,9 @@ namespace NaturalOcean
             {
                 Camera c = fc.cameras[i];
                 if (c == null || !c.isActiveAndEnabled) continue;
+#if DEV
+                if (i < 2) { cutAt[i] = c.transform.position; cutLooks[i] = c.transform.rotation; cutWide[i] = c.fieldOfView; }
+#endif
                 GeometryUtility.CalculateFrustumPlanes(c, planes);
                 for (int p = 0; p < 6; p++)
                 {
@@ -338,11 +392,55 @@ namespace NaturalOcean
                     lo.y -= far2 / (R + Mathf.Sqrt(Mathf.Max(R * R - far2, 0f)));
                     bool s = false;
                     for (int i = 0; i < views && !s; i++) s = Inside(seaPlanes[i], lo, hi);
+#if DEV
+                    if (WholeTiles) s = true;
+#endif
                     seen[k] = s;
                     if (s) any++;
                 }
-                if (any == 0) { wanted[n] = false; continue; }
+                if (any == 0) { wanted[n] = false;
+#if DEV
+                    if (say) CutSaid.Append(" r").Append(n).Append(":none");
+#endif
+                    continue; }
                 Run(mesh, any);
+#if DEV
+                // (the tiles the picture shows: rays from a grid of points over each flight camera's picture to the sea's level, the
+                // tile of this ring each meets; any of those left out is noted)
+                if (missLeft > 0)
+                    for (int i = 0; i < views && missLeft > 0; i++)
+                    {
+                        Camera c = fc.cameras[i];
+                        if (c == null) continue;
+                        for (int gy = 0; gy < 25 && missLeft > 0; gy++)
+                            for (int gx = 0; gx < 25 && missLeft > 0; gx++)
+                            {
+                                Ray ray = c.ViewportPointToRay(new Vector3((gx + 0.5f) / 25f, (gy + 0.5f) / 25f, 0f));
+                                float down = Vector3.Dot(ray.direction, up);
+                                if (down >= -1e-4f) continue;
+                                float tt = Vector3.Dot(mid - ray.origin, up) / down;
+                                if (tt < c.nearClipPlane || tt > c.farClipPlane) continue;
+                                Vector3 hit = ray.origin + ray.direction * tt - mid;
+                                float lx = Vector3.Dot(hit, first) - at[n].x, lz = Vector3.Dot(hit, second) - at[n].y;
+                                int tx = Mathf.FloorToInt(lx / (TileCells * size)) + Tiles / 2, tz = Mathf.FloorToInt(lz / (TileCells * size)) + Tiles / 2;
+                                if (tx < 0 || tx >= Tiles || tz < 0 || tz >= Tiles) continue;
+                                int cellX = Mathf.FloorToInt(lx / size) + Half, cellZ = Mathf.FloorToInt(lz / size) + Half;
+                                if (InHole(cellX, cellZ)) continue;
+                                int t = tz * Tiles + tx, kk = Array.IndexOf(round, t);
+                                if (kk < 0) continue;
+                                bool inRun = ((kk - runFirst + round.Length) % round.Length) < runLength;
+                                if (inRun) continue;
+                                missSaid.Append("frame ").Append(Time.frameCount).Append(" ring ").Append(n).Append(" tile ").Append(t).Append(" (").Append(tx).Append(',').Append(tz)
+                                        .Append(") NOT IN THE RUN (seen ").Append(seen[kk]).Append(", run from ").Append(runFirst).Append(" for ").Append(runLength).Append("), seen by camera ").Append(i).Append(" at ").Append(((gx + 0.5f) / 25f).ToString("F2")).Append(',').Append(((gy + 0.5f) / 25f).ToString("F2"))
+                                        .Append(", ").Append(tt.ToString("F0")).Append(" m off; run ").Append(any).Append(" of ").Append(round.Length).Append('\n');
+                                missLeft--;
+                            }
+                    }
+#endif
+#if DEV
+                SubMeshDescriptor dd = mesh.GetSubMesh(0);
+                if (say) CutSaid.Append(" r").Append(n).Append(':').Append(any).Append('/').Append(round.Length).Append('@').Append(dd.indexStart * 100 / Math.Max(1, once)).Append('+').Append(dd.indexCount * 100 / Math.Max(1, once)).Append('%').Append(" v").Append(dd.firstVertex).Append('+').Append(dd.vertexCount);
+#endif
             }
             cutting = true;
         }
@@ -376,16 +474,28 @@ namespace NaturalOcean
                 }
                 first_ = (bestStart + bestLength) % K; run = K - bestLength;
             }
+#if DEV
+            runFirst = first_; runLength = run;
+#endif
             int from = start[round[first_]], to = first_ + run <= K ? start[round[first_ + run - 1]] + length[round[first_ + run - 1]]
                                                                     : once + start[round[first_ + run - 1 - K]] + length[round[first_ + run - 1 - K]];
-            mesh.SetSubMesh(0, new SubMeshDescriptor(from, to - from), MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontNotifyMeshUsers | MeshUpdateFlags.DontResetBoneBounds);
+            mesh.SetSubMesh(0, Part(from, to - from), Quickly);
         }
+
+        // (Set without Unity working anything out again, as often as every frame: the bounds are the mesh's own, made huge (Make).
+        // But told not to work out the bounds, Unity works out none of a part's range of points either, and a part made with only
+        // where its indices start and how many there are was drawn as using no points at all: most of the time the run came out
+        // whole all the same, and now and then the graphics left some of its triangles out, holes in the sea through which the
+        // game's bare seabed showed (deep blue, its dark patches, with straight edges), coming and going as the run changed: the
+        // PC's grey and blue in turn from 1.5-4 km, 2026-10-25. Each part now says it may use all of the mesh's points.)
+        const MeshUpdateFlags Quickly = MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontNotifyMeshUsers | MeshUpdateFlags.DontResetBoneBounds;
+        static SubMeshDescriptor Part(int from, int count) => new SubMeshDescriptor(from, count) { firstVertex = 0, vertexCount = (Cells + 1) * (Cells + 1) };
 
         /// <summary>Every ring whole, for every camera, this frame.</summary>
         void Whole()
         {
             for (int n = 1; n < count; n++)
-                shape[n].sharedMesh.SetSubMesh(0, new SubMeshDescriptor(0, once), MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontNotifyMeshUsers | MeshUpdateFlags.DontResetBoneBounds);
+                shape[n].sharedMesh.SetSubMesh(0, Part(0, once), Quickly);
         }
 
         /// <summary>

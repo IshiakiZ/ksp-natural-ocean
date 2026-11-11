@@ -45,14 +45,20 @@ Copy the `NaturalOcean` folder from the download into your KSP's `GameData`, bes
 ## Settings
 
 In the Keystone window (the keystone button on the game's toolbar, or Alt-K; Option-K on a Mac): how rough, how
-clear the water is, whether craft ride the waves, seaweed, and whether other seas are put out of sight.
+clear the water is, whether craft ride the waves, seaweed, and whether other seas are put out of sight. With Keystone
+0.11.0, eight finer details in its Advanced view: how much of the sea breaks white, how fast the foam clears and how it
+gathers into rows, how far breaking crests go over and how big their lip is, how much spray, the sunlight under the
+water, and how far the water climbs the camera's glass.
+[All of them](https://github.com/IshiakiZ/ksp-natural-ocean/wiki/The-long-description#its-settings).
 
 ## Good to know
 
 * **Still wrong:** a blowing sea looks tame from a boat's deck (a breaking crest is white laid on a smooth wave), and a
   splash leaves no ring of waves. [The plan](https://github.com/IshiakiZ/ksp-natural-ocean/wiki/Plan) says what comes next.
-* The game's and Scatterer's seas are put out of sight where this one is drawn (Scatterer's settings are not
-  touched). Beside other mods that draw the sea (Parallax, EVE) it has not been tried.
+* The game's sea is put out of sight where this one is drawn, and Scatterer's is stopped there and made again
+  wherever this one is not (Scatterer's settings are not touched), on Direct3D; on OpenGL, where the whole picture
+  goes black while Scatterer's sea is stopped, it is left running with nothing of it showing. Beside other mods that
+  draw the sea (Parallax, EVE) it has not been tried.
 
 ## Works on
 

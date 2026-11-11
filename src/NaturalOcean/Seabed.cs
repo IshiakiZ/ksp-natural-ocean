@@ -79,6 +79,30 @@ namespace NaturalOcean
             jobSum[k] += d;
             if (d > jobWorst[k]) { jobWorst[k] = d; jobWhen[k] = Time.realtimeSinceStartup; }
         }
+        /// <summary>(Development build: for the sea's trace, each map's place, its points waiting, and of its points within 38 of the
+        /// camera's (the square the shader reads the bottom's depth from the coarsest map in), how many are asked and how many hold
+        /// deep water as nothing is known of them.)</summary>
+        public string Says()
+        {
+            var b = new System.Text.StringBuilder();
+            for (int l = Maps - 1; l >= 0; l--)
+            {
+                if (!begun[l]) { b.Append("m").Append(l).Append(" none; "); continue; }
+                int asks = 0, deeps = 0, all = 0;
+                for (long j = cellZ[l] - 38; j <= cellZ[l] + 38; j++)
+                    for (long i = cellX[l] - 38; i <= cellX[l] + 38; i++)
+                    {
+                        int n = Wrap(j) * Across + Wrap(i);
+                        all++;
+                        if (asked[l][n]) asks++;
+                        if (height[l][n] <= Unknown + 1f) deeps++;
+                    }
+                b.Append("m").Append(l).Append(' ').Append(cellX[l]).Append(',').Append(cellZ[l]).Append(" wait ").Append(waiting[l].Count)
+                 .Append(" asked ").Append(asks).Append('/').Append(all).Append(" unknown ").Append(deeps).Append("; ");
+            }
+            return b.ToString();
+        }
+
         public static string Jobs()
         {
             var b = new System.Text.StringBuilder("seabed over " + jobFrames + " frames, ms (mean, worst at the game's second):");
