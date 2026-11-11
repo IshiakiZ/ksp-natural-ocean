@@ -6,7 +6,9 @@ camera that can go half under.
 
 **A first sea, not a finished one.** It reads as a sea at a glance; it does not yet stand beside a photograph of one.
 
-![The sea in ten pictures, from a light air to a gale, the surf, under water, towards a low sun](src/NaturalOcean/img/ocean-tour.jpg)
+![Sunrise over the sea; then the sea from a light air to a gale, the sun's sheen from 3 km, the surf, the camera half under, and under water](src/NaturalOcean/img/ocean-tour.jpg)
+
+![Sunrise over the sea in a moderate breeze: the sun's path on the water](src/NaturalOcean/img/natural-ocean-sunrise.gif)
 
 ![The sea in each of its states, glassy calm to phenomenal, by the wind that makes each](src/NaturalOcean/img/natural-ocean-states.gif)
 
@@ -14,7 +16,7 @@ camera that can go half under.
 
 ![A storm's sea from a boat's deck height, 26 m/s: crests curling over, white water streaming down the wind (0.3.0)](src/NaturalOcean/img/natural-ocean-storm.gif)
 
-For Kerbal Space Program 1.12.x. **Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone) 0.9 or later**, a separate download
+For Kerbal Space Program 1.12.x. **Needs [Keystone](https://github.com/IshiakiZ/ksp-keystone) 0.11 or later**, a separate download
 ([on SpaceDock](https://spacedock.info/mod/4665/Keystone)): this mod does not load without it. With
 [Natural Weather](https://github.com/IshiakiZ/ksp-natural-weather), which is not needed, the sea goes by the weather's wind and shows its
 clouds' shadows; without it, by a light breeze.
@@ -35,8 +37,10 @@ clouds' shadows; without it, by a light breeze.
 * **A camera half under:** the waterline across the glass where the sea cuts it, and the water dimmer and bluer with
   depth.
 
+![The camera half under in a swell: the waterline across the glass](src/NaturalOcean/img/natural-ocean-waterline.gif)
+
 ![A craft crashing into the sea](src/NaturalOcean/img/natural-ocean-splash.gif)
-![Rain on the sea, drops on the camera](src/NaturalOcean/img/natural-ocean-rain.jpg)
+![Rain on the sea at noon](src/NaturalOcean/img/natural-ocean-rain.jpg)
 
 ## Install
 
