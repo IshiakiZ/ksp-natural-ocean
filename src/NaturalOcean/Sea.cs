@@ -56,7 +56,7 @@ namespace NaturalOcean
 
     static class Ocean
     {
-        public const string Version = "0.4.0";
+        public const string Version = "0.4.1";
         public static Mod Page;
         public static Toggle On, Others, Float, Weeds;
         public static Slider Rough, Clear;
@@ -202,6 +202,7 @@ namespace NaturalOcean
         /// <summary>(Development build, for finding a fault: 1 leaves out the copy of the picture before the sea (the far camera's, where its picture is kept for the near camera's sea, stays: see FarDepth); 2 leaves other seas alone; 3 hides ours; 4: nothing mirrored from the last picture; 6: the far camera's depth not kept for the near camera's sea; 7: no gusts on the water nor slicks; 11: the last picture read with the camera of the frame before it, as until 2026-11-04 (see Mirror).)</summary>
         public static float Test;
         static readonly int idWeatherShadowSun = Shader.PropertyToID("_WeatherShadowSun");
+        static readonly int idDayEye = Shader.PropertyToID("_NaturalLightDayEye");
         static readonly int idWorld = Shader.PropertyToID("_NaturalLightWorld"), idWorldLight = Shader.PropertyToID("_NaturalLightWorldLight");
         /// <summary>How bright the Mun (or another world) shows on the sea when it is the sea's light just now; 0 when the sun is (for the readout and tests).</summary>
         internal static float MoonNow;
@@ -260,6 +261,35 @@ namespace NaturalOcean
         }
         /// <summary>(Development build: "1" has a blow's dent worked out on the game's thread every frame, as until 2026-11-10; anything else off it, as now.)</summary>
         public static string DentOnThread(string v) { Dents.OnThread = (v ?? "").Trim() == "1"; return "a dent's picture is worked out " + (Dents.OnThread ? "on the game's thread" : "off the game's thread"); }
+        /// <summary>(Development build, 2026-11-19: "after" keeps the sea's picture for mirroring after the post-processing, as until
+        /// then; anything else before it, as now (AheadOfFilm). Without putting the sea off and on, as SetTest does: put off and on
+        /// in flight, Scatterer's sea came back over it, black by day.)</summary>
+        public static string MirrorAfterFilm(string v)
+        {
+            MirrorAfterFilmAsBefore = (v ?? "").Trim() == "after";
+            Sea s = instance;
+            if (s != null && s.mirrorOn != null && s.mirrorGrab != null)
+            {
+                if (MirrorAfterFilmAsBefore) { s.mirrorOn.RemoveCommandBuffer(CameraEvent.BeforeImageEffects, s.mirrorGrab); s.mirrorOn.AddCommandBuffer(CameraEvent.BeforeImageEffects, s.mirrorGrab); }
+                else s.orderedAt = float.NegativeInfinity;
+            }
+            return "the sea's picture for mirroring kept " + (MirrorAfterFilmAsBefore ? "after the post-processing, as until 2026-11-19" : "before the post-processing");
+        }
+        /// <summary>(Development build, 2026-11-19: the command buffers on the camera the sea's mirror is kept from, at the steps
+        /// round the one it is kept at, in the order each step runs them.)</summary>
+        public static string MirrorBuffers()
+        {
+            Camera cam = instance != null ? instance.mirrorOn : null;
+            if (cam == null) return "no mirror kept";
+            var steps = new List<string>();
+            foreach (CameraEvent e in new[] { CameraEvent.AfterForwardAlpha, CameraEvent.BeforeImageEffects, CameraEvent.AfterImageEffects })
+            {
+                var names = new List<string>();
+                foreach (CommandBuffer b in cam.GetCommandBuffers(e)) names.Add(b.name);
+                steps.Add(e + ": " + string.Join(", ", names.ToArray()));
+            }
+            return cam.name + ": " + string.Join(" | ", steps.ToArray()) + " (the post-processing put behind the sea's picture " + filmMoved + " times)";
+        }
 #endif
         public static string SetTest(string v) { Test = float.Parse(v, System.Globalization.CultureInfo.InvariantCulture); if (instance != null) instance.Off(""); return "test " + Test; }
 
@@ -322,7 +352,41 @@ namespace NaturalOcean
             mirrorOn = null; seenOnce = false; seenWith = Matrix4x4.zero;
         }
 
-        /// <summary>The last camera to draw the scene is made to keep its finished picture (before the lens has it), every frame.</summary>
+        float orderedAt = float.NegativeInfinity;
+        static bool MirrorAfterFilmAsBefore;     // (development build: the picture kept after the post-processing, as until 2026-11-19: MirrorAfterFilm)
+        static int filmMoved;           // (how many times the post-processing has been put behind the sea's picture: MirrorBuffers)
+
+        /// <summary>
+        /// (Since 2026-11-19.) The picture kept for mirroring is to be the scene as lit, before the post-processing's exposure and
+        /// grade (TUFX's: Unity's post-processing stack, whose work is all one command buffer, "Post-processing", at the same step
+        /// of the same camera). Two command buffers at one step run in the order they were put there, and the stack's is put there
+        /// as the camera is made ready, before the sea first keeps its picture: so the sea mirrored the finished picture, exposed
+        /// and graded, as if it were the light, and the exposure and the grade were laid on what it mirrored twice. By dawn and by
+        /// night, with Natural Light's eye three stops open, the sea sent back some nine times what it mirrored: a sheet of bright
+        /// cream under a dark brown sky within a minute of the eye's opening (the sun seven degrees under, filmed 2026-11-19,
+        /// br-sea-dawn-a; with nothing mirrored, Test 4, the sea as dark as its sky). Here the stack's buffer, and any after it,
+        /// are taken off and put back behind the sea's (the stack puts its own back last whenever it is switched off and on, so
+        /// this is looked to once a second). MirrorAfterFilm (development build): left behind it, as before.
+        /// </summary>
+        void AheadOfFilm(Camera cam)
+        {
+            if (MirrorAfterFilmAsBefore || mirrorGrab == null || cam == null) return;
+            // (by name: the camera hands back buffers of its own that stand for the same ones, never the very objects put there)
+            CommandBuffer[] there = cam.GetCommandBuffers(CameraEvent.BeforeImageEffects);
+            int film = -1, ours = -1;
+            for (int k = 0; k < there.Length; k++)
+            {
+                if (there[k].name == mirrorGrab.name) ours = k;
+                else if (film < 0 && there[k].name == "Post-processing") film = k;
+            }
+            if (ours < 0 || film < 0 || ours < film) return;
+            for (int k = film; k < there.Length; k++) cam.RemoveCommandBuffer(CameraEvent.BeforeImageEffects, there[k]);
+            cam.AddCommandBuffer(CameraEvent.BeforeImageEffects, mirrorGrab);
+            for (int k = film; k < there.Length; k++) if (k != ours) cam.AddCommandBuffer(CameraEvent.BeforeImageEffects, there[k]);
+            filmMoved++;
+        }
+
+        /// <summary>The last camera to draw the scene is made to keep its picture as drawn, before the post-processing and the lens have it (see AheadOfFilm), every frame.</summary>
         void Mirror(Camera cam, Material m)
         {
             int w = Mathf.Max(64, cam.pixelWidth / 2), h = Mathf.Max(64, cam.pixelHeight / 2);
@@ -346,6 +410,13 @@ namespace NaturalOcean
                 mirrorGrab.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
                 cam.AddCommandBuffer(CameraEvent.BeforeImageEffects, mirrorGrab);
                 mirrorOn = cam;
+                orderedAt = float.NegativeInfinity;
+            }
+            // (ahead of the post-processing at that step, looked to once a second: see AheadOfFilm)
+            if (Time.unscaledTime - orderedAt > 1f)
+            {
+                orderedAt = Time.unscaledTime;
+                AheadOfFilm(cam);
             }
             // (what the camera saw with when it drew the picture the sea will mirror this frame: last frame's. This is set in the
             // frame's LateUpdate, before the camera's onPreCull, so that is the one kept at the last onPreCull, seenWith. Until
@@ -941,9 +1012,24 @@ namespace NaturalOcean
             // (an overcast sky is brightest overhead: about three times as bright as at the horizon (the CIE's overcast sky,
             // (1 + 2 sin h) / 3); a clear one the other way round. As it first was, the grey overhead was half the grey at the
             // horizon, and an overcast sea came out darker and bluer than one is)
-            float greyLow = low.grayscale * 0.85f, greyTop = greyLow * 2.6f;
+            // (Under rain and under a dark deck the sky the sea mirrors is flat, and a little under the horizon's grey (2026-11-11).
+            // The CIE's overcast, 2.6 times as bright overhead, is a thin bright overcast's. The deck Natural Weather draws over
+            // rain, seen through the rain's veil, is as dark overhead as at the horizon, and mirroring the brighter sky the sea
+            // stood at 0.81 to 0.85 of the sky's brightness in the picture, its middle distance as bright as the sky, its far
+            // water brighter and its foam up to four times as bright, which water lit by that sky cannot be (the owner, of a sea
+            // in rain: "Shouldn't the ocean be darker when it's rainy and cloudy?"; real water sends back a tenth to a quarter of
+            // the sky's light looking down, and never more than the sky). How flat: all of it in rain from a third of a cloudburst,
+            // or where the sky's light is under a third of a clear day's.)
+            float flat = shade.Grey * Mathf.Clamp01(Mathf.Max(rainOnSea * 3f, (0.8f - shade.Sky) / 0.5f));
+            float greyLow = low.grayscale * 0.85f * Mathf.Lerp(1f, FlatLow, flat), greyTop = greyLow * Mathf.Lerp(2.6f, FlatTop, flat);
             top = Color.Lerp(top, new Color(greyTop, greyTop, greyTop * 1.04f), shade.Grey) * shade.Sky;
             low = Color.Lerp(low, new Color(greyLow, greyLow, greyLow * 1.03f), shade.Grey) * shade.Sky;
+            // (and as far as Natural Light's eye is open for cloud in the light itself, in stops, where no film is at work there (its
+            // FilmLook.LightEye, since 2026-11-11; nought with TUFX, without Natural Light or with an older one): it makes the
+            // sky's light so much stronger, and the sea's own sky goes with it. Without this the sky over a sea in rain was lifted
+            // and the sea under it left as dark as it was, a hard dark band below the horizon (the PC, 2026-11-11).)
+            float dayEye = Mathf.Pow(2f, Mathf.Clamp(Shader.GetGlobalFloat(idDayEye), 0f, 4f));
+            top *= dayEye; low *= dayEye;
             // (How much sun reaches the water. Where the weather draws its own clouds (SunDimmed) they dim the sun by laying
             // their shadow over the finished picture, which this sea is drawn after, and the game's light is left as it was:
             // so the sea takes the weather's own share. Where they do not, the light mod has dimmed the game's light already.
@@ -1374,7 +1460,16 @@ namespace NaturalOcean
 #endif
         }
 
+        /// <summary>The sea's sky under rain or a dark deck (see where the light is set): how bright overhead against the horizon's grey, and how much of the horizon's grey is kept.</summary>
+        public static float FlatTop = 1.15f, FlatLow = 0.85f;
 #if DEV
+        /// <summary>(Development build: the sea's flat sky tried: "1.15 0.85", overhead against the horizon and the horizon's share; "2.6 1" is as until 2026-11-11.)</summary>
+        public static string SkyFlat(string words)
+        {
+            string[] w = (words ?? "").Trim().Split(' ');
+            if (w.Length == 2) { FlatTop = float.Parse(w[0], System.Globalization.CultureInfo.InvariantCulture); FlatLow = float.Parse(w[1], System.Globalization.CultureInfo.InvariantCulture); }
+            return "the sea's sky under rain: overhead " + FlatTop + " times the horizon's grey, the horizon's " + FlatLow + " of it";
+        }
         /// <summary>(Development build: a sea held for a test: "wind 12", "swell 2", "to 90" (degrees round from the sea's first axis), "go" lets all go.)</summary>
         public static string Try(string words)
         {

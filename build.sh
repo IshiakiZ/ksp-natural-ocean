@@ -34,13 +34,16 @@ if [ -f src/NaturalOcean/needs.txt ]; then
   done < src/NaturalOcean/needs.txt
 fi
 
-# A companion library for the Harmony mod, where this mod has one (src/NaturalOceanHarmony): built against this mod and against
-# Harmony, only where Harmony is installed in the game, and loaded by the game only where it is.
+# A companion library for the Harmony mod, where this mod has one (src/NaturalOceanCompanion): built against this mod and against
+# Harmony, only where Harmony is installed in the game, and loaded by the game only where it is. (It was NaturalOceanHarmony.dll
+# until 2026-11-20: CKAN takes any library with "Harmony" in its name for a copy of Harmony itself. That file, from a
+# build here before then, goes: a download must not carry it.)
 HARMONY="$KSP_DIR/GameData/000_Harmony/0Harmony.dll"
 companion() {  # companion <folder the mod's own library is in>
-  [ -d src/NaturalOceanHarmony ] || return 0
-  if [ -f "$HARMONY" ]; then WITH="$KEYSTONE:$1/NaturalOcean.dll:$HARMONY" compile "$1/NaturalOceanHarmony.dll" "" src/NaturalOceanHarmony
-  else rm -f "$1/NaturalOceanHarmony.dll"; echo "left out: NaturalOceanHarmony (Harmony is not installed here to build it against)"; fi
+  rm -f "$1/NaturalOceanHarmony.dll"
+  [ -d src/NaturalOceanCompanion ] || return 0
+  if [ -f "$HARMONY" ]; then WITH="$KEYSTONE:$1/NaturalOcean.dll:$HARMONY" compile "$1/NaturalOceanCompanion.dll" "" src/NaturalOceanCompanion
+  else rm -f "$1/NaturalOceanCompanion.dll"; echo "left out: NaturalOceanCompanion (Harmony is not installed here to build it against)"; fi
 }
 
 case "$MODE" in
@@ -60,8 +63,8 @@ case "$MODE" in
     if [ "$MODE" = dist ]; then echo "ok: built into $OUT"; exit 0; fi
     mkdir -p "$KSP_DIR/GameData/NaturalOcean"
     cp "$OUT/NaturalOcean.dll" "$KSP_DIR/GameData/NaturalOcean/"
-    rm -f "$KSP_DIR/GameData/NaturalOcean/NaturalOceanHarmony.dll"
-    [ -f "$OUT/NaturalOceanHarmony.dll" ] && cp "$OUT/NaturalOceanHarmony.dll" "$KSP_DIR/GameData/NaturalOcean/"
+    rm -f "$KSP_DIR/GameData/NaturalOcean/NaturalOceanHarmony.dll" "$KSP_DIR/GameData/NaturalOcean/NaturalOceanCompanion.dll"
+    [ -f "$OUT/NaturalOceanCompanion.dll" ] && cp "$OUT/NaturalOceanCompanion.dll" "$KSP_DIR/GameData/NaturalOcean/"
     if [ -d "$OUT/PluginData" ]; then mkdir -p "$KSP_DIR/GameData/NaturalOcean/PluginData"; cp -R "$OUT/PluginData/." "$KSP_DIR/GameData/NaturalOcean/PluginData/"; fi
     echo "ok: Natural Ocean installed to $KSP_DIR/GameData/NaturalOcean (restart KSP to load it; it needs Keystone there too)"
     ;;
